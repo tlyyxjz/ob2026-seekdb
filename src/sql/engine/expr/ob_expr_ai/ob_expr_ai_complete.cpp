@@ -130,7 +130,11 @@ int ObExprAIComplete::eval_ai_complete(const ObExpr &expr,
     }
 
     if (OB_FAIL(ret)) {
-    } else if (OB_NOT_NULL(arg_config)) {
+    } else if (OB_NOT_NULL(arg_config) && !arg_config->is_null()) {
+      // A SQL NULL in the optional config position means "no config". eval_param_value
+      // always hands back a datum, so the pointer alone cannot tell the two cases
+      // apart; without the null check the empty string below would go through json
+      // parsing and fail the whole statement.
       if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_, temp_allocator, *arg_config, expr.args_[2]->datum_meta_, expr.args_[2]->obj_meta_.has_lob_header(), config_str))) {
       } else if (OB_FAIL(ObAIFuncJsonUtils::get_json_object_form_str(temp_allocator, config_str, config))) {
       }

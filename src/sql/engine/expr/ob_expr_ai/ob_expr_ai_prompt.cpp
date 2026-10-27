@@ -19,6 +19,7 @@
 #include <regex>
 #include "ob_ai_func.h"
 #include "lib/utility/utility.h"
+#include "sql/engine/expr/ob_expr_lob_utils.h"
 #include "common/json_type/ob_json_common.h"
 #include "common/json_type/ob_json_base.h"
 
@@ -53,15 +54,25 @@ int ObExprAIPrompt::calc_result_typeN(ObExprResType &type,
   int ret = OB_SUCCESS;
   bool is_null_res = false;
   ObExprResType template_type = types_stack[0];
-  if (!ob_is_string_tc(template_type.get_type())) {
+  if (!ob_is_string_type(template_type.get_type())) {
     ret = OB_ERR_INVALID_TYPE_FOR_OP;
+  } else if (ob_is_text_tc(template_type.get_type())) {
+    // A TEXT / BLOB template keeps its own type and only gets a normalised collation.
+    // Rewriting it to varchar would leave the datum holding a lob locator, so the
+    // eval stage would read that locator instead of the template text; keeping the
+    // type lets read_real_string_data materialise the real text.
+    types_stack[0].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
   } else {
     types_stack[0].set_calc_type(ObVarcharType);
     types_stack[0].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
   }
 
   for (int64_t i = 1; i < param_num && OB_SUCC(ret); i++) {
-    if (ob_is_string_tc(types_stack[i].get_type())) {
+    if (ob_is_text_tc(types_stack[i].get_type())) {
+      // Same as the template: keep the lob type so the argument text is read out of
+      // the lob storage rather than being interpreted as a locator.
+      types_stack[i].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
+    } else if (ob_is_string_tc(types_stack[i].get_type())) {
       types_stack[i].set_calc_type(ObVarcharType);
       types_stack[i].set_calc_collation_type(CS_TYPE_UTF8MB4_BIN);
     } else if (ob_is_json(types_stack[i].get_type())) {
@@ -95,7 +106,9 @@ int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
 
   if (OB_FAIL(tmp_allocator.eval_arg(arg0, ctx, template_datum))) {
   } else if (template_datum->is_null()) {
-    ret = OB_INVALID_ARGUMENT;
+    // A NULL template is reported as a type error, the same error the type deduction
+    // raises for a NULL literal, so both paths agree on the reported error code.
+    ret = OB_ERR_INVALID_TYPE_FOR_OP;
   } else if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_,
                                                                tmp_allocator,
                                                                *template_datum,
@@ -119,7 +132,7 @@ int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
         // A NULL argument is a type error for ai_prompt regardless of the declared
         // type of the argument, so the NULL check must come before type dispatch.
         ret = OB_ERR_INVALID_TYPE_FOR_OP;
-      } else if (ob_is_string_tc(arg->datum_meta_.type_)) {
+      } else if (ob_is_string_type(arg->datum_meta_.type_)) {
         if (OB_FAIL(ObTextStringHelper::read_real_string_data(ctx.exec_ctx_,
                                                               tmp_allocator,
                                                               *datum,
@@ -130,22 +143,18 @@ int ObExprAIPrompt::eval_ai_prompt(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
         } else if (OB_FAIL(args_array->append(arg_json_str))) {
         }
       } else if (ob_is_json(arg->datum_meta_.type_)) {
-        // JSON arguments (JSON array, JSON object, JSON scalar) are appended with
-        // their structure preserved. The value is reparsed from the datum instead of
-        // being taken from the expression's json tree, because an expression
-        // argument's per-row json tree is not guaranteed to be materialised.
+        // JSON arguments keep their structure in the prompt args array. The datum of a
+        // json expression holds the binary json encoding, so the tree is fetched
+        // through get_json_doc instead of being parsed from the raw datum bytes.
         ObIJsonBase *json_base = NULL;
-        arg_str = datum->get_string();
-        if (arg_str.empty()) {
+        bool is_json_null = false;
+        if (OB_FAIL(ObJsonExprHelper::get_json_doc(expr, ctx, tmp_allocator,
+                                                   static_cast<uint16_t>(i),
+                                                   json_base, is_json_null,
+                                                   true /*need_to_tree*/))) {
+        } else if (is_json_null || OB_ISNULL(json_base)) {
           ret = OB_ERR_INVALID_TYPE_FOR_OP;
-        } else if (OB_FAIL(ObJsonBaseFactory::get_json_base(&tmp_allocator, arg_str,
-                                                            ObJsonInType::JSON_TREE,
-                                                            ObJsonInType::JSON_TREE,
-                                                            json_base))) {
-          LOG_WARN("fail to parse json argument of ai_prompt", K(ret));
-        } else if (OB_ISNULL(json_base)) {
-          ret = OB_ERR_UNEXPECTED;
-        } else if (OB_FAIL(args_array->append(json_base))) {
+        } else if (OB_FAIL(args_array->append(static_cast<ObJsonNode *>(json_base)))) {
         }
       } else {
         ret = OB_ERR_INVALID_TYPE_FOR_OP;
