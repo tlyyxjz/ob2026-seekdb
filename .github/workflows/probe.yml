@@ -36,6 +36,16 @@ jobs:
         key: ${{ runner.os }}-build-${{ env.cache-name }}-el9.x86_64-${{ hashFiles('deps/init/oceanbase.el9.x86_64.deps') }}
         path: deps/3rd
 
+    # Regenerating the parser is a couple of minutes and fails first on a
+    # grammar mistake, so do it before the full build to keep the loop short.
+    - name: Check sql parser grammar
+      shell: bash
+      run: |
+        cd src/sql/parser
+        NEED_PARSER_CACHE=OFF bash gen_parser.sh
+        echo "--- parser generated ---"
+        ls -l sql_parser_mysql_mode_tab.c type_name.c
+
     - name: Build
       uses: ./.github/workflows/buildbase
       with:
