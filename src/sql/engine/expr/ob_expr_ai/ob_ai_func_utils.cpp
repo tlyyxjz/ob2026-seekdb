@@ -258,7 +258,14 @@ int ObOllamaUtils::get_header(common::ObIAllocator &allocator,
                               common::ObArray<ObString> &headers) 
 {
   int ret = OB_SUCCESS;
-  // ollama header is empty, do nothing
+  // Ollama needs no credential, but the request still has to carry the JSON
+  // content type.  An empty header list is rejected by the http client, so a
+  // provider without an access key must not simply append nothing.
+  ObString content_type_str("Content-Type: application/json");
+  ObString content_type_c_str;
+  if (OB_FAIL(ob_write_string(allocator, content_type_str, content_type_c_str, true))) {
+  } else if (OB_FAIL(headers.push_back(content_type_c_str))) {
+  }
   return ret;
 }
 

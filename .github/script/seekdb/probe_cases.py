@@ -67,6 +67,33 @@ def print_diff(expected_path, reject_path):
         print("... {} more diff lines truncated".format(len(lines) - limit))
 
 
+def print_observer_log(case_name, base_dir, destination):
+    """Copy the instance logs before they are destroyed and expose the error chain.
+
+    The mysqltest output only carries the user facing error code, so the server
+    side log is the only place that shows which statement produced it.
+    """
+    try:
+        runner.copy_instance_diagnostics(Path(base_dir), destination)
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never mask the real failure
+        print("[OBSERVER] failed to copy instance logs: {}".format(exc))
+        return
+    print("[OBSERVER] logs copied to {}".format(destination))
+    keywords = ("4152", "null value", "ai_complete", "ai_embed", "ai_model_endpoint",
+                "ERROR", "ret=-")
+    for log_file in sorted(destination.rglob("*.log*")):
+        try:
+            lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        hits = [line for line in lines if any(key in line for key in keywords)]
+        if not hits:
+            continue
+        print("--- {} ({} matching lines)".format(log_file.name, len(hits)))
+        for line in hits[-60:]:
+            print(line)
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     repo_root = HERE.parents[2]
@@ -104,6 +131,9 @@ def main(argv=None):
                     print_diff(case.result_file, reject)
                 else:
                     print("[DIFF] no reject file at {}".format(reject))
+                print_observer_log(case.name,
+                                   args.base_dir,
+                                   args.work_dir / "diagnostics" / case.name)
     except Exception as exc:  # noqa: BLE001 - infrastructure errors must not be silent
         error = str(exc)
         print("[probe][ERROR] {}".format(error), file=sys.stderr)
