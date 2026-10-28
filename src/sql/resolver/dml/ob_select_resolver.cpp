@@ -3121,22 +3121,24 @@ int ObSelectResolver::resolve_copy_into_clause(const ParseNode *node, ObSelectIn
     LOG_WARN("COPY needs an explicit csv format", K(ret));
   }
   if (OB_SUCC(ret)) {
-    // COPY always writes a plain comma separated file with '\n' line ends and
-    // without field enclosing.
-    external_format.format_type_ = ObExternalFileFormat::CSV_FORMAT;
-    external_format.csv_format_.field_term_str_.assign_ptr(",", 1);
-    external_format.csv_format_.line_term_str_.assign_ptr("\n", 1);
-    external_format.csv_format_.field_enclosed_char_ = INT64_MAX;
-    external_format.csv_format_.field_escaped_char_ = '\\';
-    external_format.csv_format_.cs_type_ =
-        ObCharset::charset_type_by_coll(ObCharset::get_system_collation());
-    external_format.csv_format_.parse_header_ = has_header;
-    external_format.csv_format_.file_extension_ = ObString();
-    if (OB_FAIL(external_format.to_string_with_alloc(into_item.external_properties_,
-                                                     *allocator_, true))) {
-      LOG_WARN("failed to serialize the COPY format", K(ret));
-    } else if (has_header && OB_FAIL(build_copy_header_line(into_item))) {
-      LOG_WARN("failed to build the COPY header", K(ret));
+    // Start from the same defaults as `INTO OUTFILE ... FORMAT CSV`, then apply
+    // the COPY dialect: comma separated, no field enclosing, '\n' line ends.
+    const ObCollationType file_cs_type = ObCharset::get_system_collation();
+    if (OB_FAIL(external_format.csv_format_.init_format(ObDataInFileStruct(), 0, file_cs_type))) {
+      LOG_WARN("failed to init the COPY format", K(ret));
+    } else {
+      external_format.format_type_ = ObExternalFileFormat::CSV_FORMAT;
+      external_format.csv_format_.field_term_str_.assign_ptr(",", 1);
+      external_format.csv_format_.line_term_str_.assign_ptr("\n", 1);
+      external_format.csv_format_.field_enclosed_char_ = INT64_MAX;
+      external_format.csv_format_.field_escaped_char_ = '\\';
+      external_format.csv_format_.parse_header_ = has_header;
+      if (OB_FAIL(external_format.to_string_with_alloc(into_item.external_properties_,
+                                                       *allocator_, true))) {
+        LOG_WARN("failed to serialize the COPY format", K(ret));
+      } else if (has_header && OB_FAIL(build_copy_header_line(into_item))) {
+        LOG_WARN("failed to build the COPY header", K(ret));
+      }
     }
   }
   return ret;
