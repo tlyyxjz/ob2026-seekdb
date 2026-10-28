@@ -58,17 +58,10 @@ jobs:
         set -euo pipefail
         nohup python3 .github/script/seekdb/mock_ai_service.py serve 8000 \
           > "$GITHUB_WORKSPACE/probe_out_mock.log" 2>&1 &
+        PAYLOAD='{"query":"probe","documents":["a","b"]}'
         for _ in $(seq 1 50); do
-          if python3 - <<'PY'
-import json, urllib.request
-req = urllib.request.Request(
-    "http://127.0.0.1:8000/v1/rerank",
-    data=json.dumps({"query": "q", "documents": ["a", "b"]}).encode(),
-    headers={"Content-Type": "application/json"})
-with urllib.request.urlopen(req, timeout=2) as resp:
-    assert len(json.loads(resp.read())["results"]) == 2
-PY
-          then
+          if curl -fsS -m 2 -X POST http://127.0.0.1:8000/v1/rerank \
+               -H 'Content-Type: application/json' -d "$PAYLOAD" | grep -q relevance_score; then
             echo "mock model service ready"
             exit 0
           fi
