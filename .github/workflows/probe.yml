@@ -52,6 +52,27 @@ jobs:
         test -x "$CLIENT_ROOT/bin/obclient"
         test -x "$CLIENT_ROOT/bin/mysqltest"
 
+    # The file_sql suite stages its fixtures with ssh/scp against whatever
+    # host_ip() reports, so the runner has to be able to reach itself over ssh
+    # without a password. A stock runner image has neither sshd nor a key pair.
+    - name: Enable passwordless ssh to this host
+      shell: bash
+      run: |
+        set -euo pipefail
+        sudo apt-get install -y openssh-server >/dev/null
+        sudo ssh-keygen -A
+        sudo systemctl enable --now ssh || sudo service ssh start
+        mkdir -p ~/.ssh && chmod 700 ~/.ssh
+        if [ ! -f ~/.ssh/id_rsa ]; then
+          ssh-keygen -t rsa -b 2048 -N '' -f ~/.ssh/id_rsa -q
+        fi
+        touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+        grep -qxF "$(cat ~/.ssh/id_rsa.pub)" ~/.ssh/authorized_keys \
+          || cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+        printf 'Host *\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n' > ~/.ssh/config
+        chmod 600 ~/.ssh/config
+        ssh -o BatchMode=yes -o ConnectTimeout=10 127.0.0.1 'echo ssh-self-ok'
+
     - name: Start mock model service
       shell: bash
       run: |
