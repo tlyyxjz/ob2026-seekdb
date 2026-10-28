@@ -175,16 +175,16 @@ int ObTransformSimplifyExpr::reduce_join_condition_operands(TableItem *table, bo
   trans_happened = false;
   if (OB_ISNULL(table)) {
     ret = OB_ERR_UNEXPECTED;
-  } else if (IS_JOIN_TABLE(table->type_)) {
+  } else if (table->is_joined_table()) {
     JoinedTable *joined_table = static_cast<JoinedTable *>(table);
-    for (int64_t i = 0; OB_SUCC(ret) && !trans_happened && i < joined_table->get_join_item_size(); ++i) {
-      TableItem *item = joined_table->get_join_item(i);
-      if (OB_FAIL(SMART_CALL(reduce_join_condition_operands(item, trans_happened)))) {
-      }
-    }
-    if (OB_SUCC(ret) && !trans_happened) {
-      if (OB_FAIL(inner_reduce_identity_operands(joined_table->get_join_conditions(), trans_happened))) {
-      }
+    if (OB_FAIL(SMART_CALL(reduce_join_condition_operands(joined_table->left_table_,
+                                                          trans_happened)))) {
+    } else if (!trans_happened &&
+               OB_FAIL(SMART_CALL(reduce_join_condition_operands(joined_table->right_table_,
+                                                                 trans_happened)))) {
+    } else if (!trans_happened &&
+               OB_FAIL(inner_reduce_identity_operands(joined_table->get_join_conditions(),
+                                                      trans_happened))) {
     }
   }
   return ret;
