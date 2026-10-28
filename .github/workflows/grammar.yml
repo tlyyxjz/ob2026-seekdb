@@ -1,0 +1,57 @@
+name: SeekDB Grammar Check
+
+# Regenerates the SQL parser only, so that a grammar mistake is reported in a
+# couple of minutes instead of after a full observer build.
+on:
+  workflow_dispatch:
+
+jobs:
+  grammar:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install ubuntu environment
+      shell: bash
+      run: |
+        export DEBIAN_FRONTEND=noninteractive
+        sudo apt-get update
+        sudo apt-get install -y git wget rpm rpm2cpio cpio make build-essential binutils m4 libtool-bin libncurses5 python3
+
+    - name: Cache deps
+      id: cache-deps
+      uses: actions/cache@v3
+      env:
+        cache-name: cache-deps
+      with:
+        key: ${{ runner.os }}-build-${{ env.cache-name }}-el9.x86_64-${{ hashFiles('deps/init/oceanbase.el9.x86_64.deps') }}
+        path: deps/3rd
+
+    - name: Locate bison
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$GITHUB_WORKSPACE/deps/3rd/usr/local/oceanbase/devtools/bin:$PATH"
+        which bison flex
+        bison -V | head -1
+        flex -V 2>&1 | head -1
+
+    - name: Generate parser
+      shell: bash
+      run: |
+        cd src/sql/parser
+        NEED_PARSER_CACHE=OFF bash gen_parser.sh
+        echo "--- parser generated ---"
+        ls -l sql_parser_mysql_mode_tab.c sql_parser_mysql_mode_tab.h type_name.c
+
+    - name: Show generate error
+      if: always()
+      shell: bash
+      run: |
+        for f in src/sql/parser/_gen_parser.error src/sql/parser/_gen_parser.output; do
+          if [ -f "$f" ]; then
+            echo "===== $f ====="
+            head -80 "$f"
+          fi
+        done

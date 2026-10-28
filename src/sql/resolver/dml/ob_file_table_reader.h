@@ -32,7 +32,7 @@
 #include "lib/container/ob_se_array.h"
 #include "lib/oblog/ob_log_module.h"
 #include "common/ob_accuracy.h"
-#include "common/ob_string.h"
+#include "lib/string/ob_string.h"
 #include "common/object/ob_object.h"
 #include "common/timezone/ob_time_convert.h"
 

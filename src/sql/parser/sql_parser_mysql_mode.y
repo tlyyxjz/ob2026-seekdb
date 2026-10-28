@@ -8956,12 +8956,14 @@ copy_option
 copy_option:
 FORMAT opt_equal_mark copy_format_name
 {
+  (void) ($2);
   malloc_non_terminal_node($$, result->malloc_pool_, T_EXTERNAL_FILE_FORMAT_TYPE, 1, $3);
 }
 | NAME_OB opt_equal_mark copy_option_arg
 {
   // header / header = true / nullstr 'NULL' / ... : the option name is kept as
   // a bare identifier and interpreted by the resolver.
+  (void) ($2);
   malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $3);
 }
 ;
