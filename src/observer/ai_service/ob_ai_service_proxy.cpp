@@ -32,26 +32,26 @@ using namespace oceanbase::common;
 using namespace oceanbase::sqlclient;
 using namespace oceanbase::transaction;
 
-namespace {
-
 // Writing an empty optional string as SQL NULL makes the read path fail with
 // OB_ERR_NULL_VALUE (4152): access_key is read without a null default because a
 // missing value there would silently disable authentication.  Empty values are
 // therefore persisted as the empty string.
-int add_optional_str_column(ObDMLSqlSplicer &sql, const char *name, const ObString &value)
+//
+// This is a member rather than a file local helper: the log macros expand to
+// identifiers that only resolve from a class scope inside oceanbase::share, not
+// from the global namespace.
+int ObAiServiceProxy::add_optional_str_column_(ObDMLSqlSplicer &sql,
+                                               const char *name,
+                                               const ObString &value)
 {
   int ret = OB_SUCCESS;
   if (value.empty()) {
-    if (OB_FAIL(sql.add_column(name, ObString::make_string("")))) {
-      LOG_WARN("failed to add empty string column", KR(ret), K(name));
-    }
-  } else if (OB_FAIL(sql.add_column(name, ObHexEscapeSqlStr(value)))) {
-    LOG_WARN("failed to add string column", KR(ret), K(name));
+    ret = sql.add_column(name, ObString::make_string(""));
+  } else {
+    ret = sql.add_column(name, ObHexEscapeSqlStr(value));
   }
   return ret;
 }
-
-}  // namespace
 
 int ObAiServiceProxy::insert_ai_endpoint(ObMySQLTransaction &trans, const int64_t new_endpoint_version, const ObAiModelEndpointInfo &endpoint)
 {
@@ -66,7 +66,7 @@ int ObAiServiceProxy::insert_ai_endpoint(ObMySQLTransaction &trans, const int64_
   } else if (OB_FAIL(sql.add_column("endpoint_name", endpoint.name_))) {
   } else if (OB_FAIL(sql.add_column("ai_model_name", ObHexEscapeSqlStr(endpoint.ai_model_name_)))) {
   } else if (OB_FAIL(sql.add_column("url", ObHexEscapeSqlStr(endpoint.url_)))) {
-  } else if (OB_FAIL(add_optional_str_column(sql, "access_key", endpoint.access_key_))) {
+  } else if (OB_FAIL(add_optional_str_column_(sql, "access_key", endpoint.access_key_))) {
   } else if (OB_FAIL(sql.add_column("request_model_name", ObHexEscapeSqlStr(endpoint.request_model_name_)))) {
   } else if (OB_FAIL(sql.add_column("provider", ObHexEscapeSqlStr(endpoint.provider_)))) {
   } else if (OB_FAIL(sql.add_column("parameters", ObHexEscapeSqlStr(endpoint.parameters_)))) {
@@ -99,7 +99,7 @@ int ObAiServiceProxy::update_ai_endpoint(ObMySQLTransaction &trans, const int64_
   } else if (OB_FAIL(sql.add_column("endpoint_name", endpoint.name_))) {
   } else if (OB_FAIL(sql.add_column("ai_model_name", ObHexEscapeSqlStr(endpoint.ai_model_name_)))) {
   } else if (OB_FAIL(sql.add_column("url", ObHexEscapeSqlStr(endpoint.url_)))) {
-  } else if (OB_FAIL(add_optional_str_column(sql, "access_key", endpoint.access_key_))) {
+  } else if (OB_FAIL(add_optional_str_column_(sql, "access_key", endpoint.access_key_))) {
   } else if (OB_FAIL(sql.add_column("request_model_name", ObHexEscapeSqlStr(endpoint.request_model_name_)))) {
   } else if (OB_FAIL(sql.add_column("provider", ObHexEscapeSqlStr(endpoint.provider_)))) {
   } else if (OB_FAIL(sql.add_column("parameters", ObHexEscapeSqlStr(endpoint.parameters_)))) {

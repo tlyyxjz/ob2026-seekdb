@@ -56,6 +56,9 @@ private:
   // Stores NULL when the endpoint has no cap of its own, so that an explicit
   // "no cap" stays distinguishable from a cap that was simply never set.
   static int add_max_concurrency_column_(ObDMLSqlSplicer &sql, const ObAiModelEndpointInfo &endpoint);
+  // Persists an empty optional string as '' instead of SQL NULL: the read path
+  // treats NULL as an error for access_key (it would silently drop auth).
+  static int add_optional_str_column_(ObDMLSqlSplicer &sql, const char *name, const ObString &value);
 };
 
 } // namespace share
