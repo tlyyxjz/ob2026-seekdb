@@ -33,6 +33,8 @@ class ObMySQLResult;
 namespace share
 {
 
+class ObDMLSqlSplicer;
+
 class ObAiServiceProxy
 {
 public:
@@ -51,6 +53,9 @@ public:
 private:
   // ai endpoint
   static int build_ai_endpoint_(common::ObArenaAllocator &allocator, common::sqlclient::ObMySQLResult &result, ObAiModelEndpointInfo &endpoint);
+  // Stores NULL when the endpoint has no cap of its own, so that an explicit
+  // "no cap" stays distinguishable from a cap that was simply never set.
+  static int add_max_concurrency_column_(common::ObDMLSqlSplicer &sql, const ObAiModelEndpointInfo &endpoint);
 };
 
 } // namespace share
