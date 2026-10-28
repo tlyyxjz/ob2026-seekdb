@@ -36,6 +36,7 @@
 #else
 #include <ifaddrs.h>
 #include <netinet/in.h>
+#include <linux/if_packet.h>
 #endif
 #endif
 #include "sql/engine/expr/ob_expr_uuid.h"
