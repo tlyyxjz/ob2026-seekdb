@@ -176,15 +176,19 @@ int ObTransformSimplifyExpr::reduce_join_condition_operands(TableItem *table, bo
   if (OB_ISNULL(table)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (table->is_joined_table()) {
+    // This fork keeps a joined table as a binary node (left / right), so the walk visits
+    // the two children instead of a flat join-item list.
     JoinedTable *joined_table = static_cast<JoinedTable *>(table);
-    if (OB_FAIL(SMART_CALL(reduce_join_condition_operands(joined_table->left_table_,
-                                                          trans_happened)))) {
-    } else if (!trans_happened &&
-               OB_FAIL(SMART_CALL(reduce_join_condition_operands(joined_table->right_table_,
-                                                                 trans_happened)))) {
-    } else if (!trans_happened &&
-               OB_FAIL(inner_reduce_identity_operands(joined_table->get_join_conditions(),
-                                                      trans_happened))) {
+    bool left_happened = false;
+    bool right_happened = false;
+    if (OB_FAIL(SMART_CALL(reduce_join_condition_operands(joined_table->left_table_, left_happened)))) {
+    } else if (OB_FAIL(SMART_CALL(reduce_join_condition_operands(joined_table->right_table_, right_happened)))) {
+    } else {
+      trans_happened = left_happened || right_happened;
+    }
+    if (OB_SUCC(ret) && !trans_happened) {
+      if (OB_FAIL(inner_reduce_identity_operands(joined_table->get_join_conditions(), trans_happened))) {
+      }
     }
   }
   return ret;
