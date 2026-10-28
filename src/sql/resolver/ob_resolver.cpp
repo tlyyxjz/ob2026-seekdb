@@ -240,11 +240,11 @@ static int resolve_file_describe(ObResolverParams &params,
       }
       if (OB_SUCC(ret)) {
         const ObValuesTableDef *table_def = file_table->values_table_def_;
-        const ObIArray<ColumnItem> &column_items = file_table->get_column_items();
+        const ObIArray<ColumnItem> &column_items = described_select->get_column_items();
         const int64_t column_cnt = table_def->column_cnt_;
-        if (OB_UNLIKELY(column_cnt <= 0 || column_cnt != column_items.count())) {
+        if (OB_UNLIKELY(column_cnt <= 0)) {
           ret = OB_ERR_UNEXPECTED;
-          LOG_WARN("invalid file table definition", K(column_cnt), K(column_items.count()), K(ret));
+          LOG_WARN("invalid file table definition", K(column_cnt), K(ret));
         } else if (OB_FAIL(sql.append("select `column_name`, `column_type`, `null`, `key`, "
                                       "`default`, `extra` from ("))) {
           LOG_WARN("failed to build the describe statement", K(ret));
@@ -252,7 +252,19 @@ static int resolve_file_describe(ObResolverParams &params,
         for (int64_t c = 0; OB_SUCC(ret) && c < column_cnt; ++c) {
           const ObObjParam *sample = NULL;
           bool has_null = false;
-          for (int64_t r = 0; r < table_def->row_cnt_; ++r) {
+          const ObString *column_name = NULL;
+          for (int64_t k = 0; OB_SUCC(ret) && NULL == column_name && k < column_items.count(); ++k) {
+            const ColumnItem &column_item = column_items.at(k);
+            if (column_item.table_id_ == file_table->table_id_
+                && column_item.column_id_ == static_cast<uint64_t>(c) + OB_APP_MIN_COLUMN_ID) {
+              column_name = &column_item.column_name_;
+            }
+          }
+          if (OB_ISNULL(column_name)) {
+            ret = OB_ERR_UNEXPECTED;
+            LOG_WARN("file table column is missing from the statement", K(c), K(ret));
+          }
+          for (int64_t r = 0; OB_SUCC(ret) && r < table_def->row_cnt_; ++r) {
             const ObObjParam &cell = table_def->access_objs_.at(r * column_cnt + c);
             if (cell.is_null()) {
               has_null = true;
@@ -270,7 +282,7 @@ static int resolve_file_describe(ObResolverParams &params,
           if (OB_SUCC(ret) && OB_FAIL(sql.append_fmt("select %ld as ft_ord, ", c))) {
             LOG_WARN("failed to build the describe statement", K(ret));
           }
-          if (OB_SUCC(ret) && OB_FAIL(file_describe_append_literal(sql, column_items.at(c).column_name_))) {
+          if (OB_SUCC(ret) && OB_FAIL(file_describe_append_literal(sql, *column_name))) {
             LOG_WARN("failed to build the describe statement", K(ret));
           }
           if (OB_SUCC(ret) && OB_FAIL(sql.append(" as `column_name`, "))) {
