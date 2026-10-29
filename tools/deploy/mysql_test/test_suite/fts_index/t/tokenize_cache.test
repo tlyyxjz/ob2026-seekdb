@@ -1,0 +1,96 @@
+# owner: tlyyxjz
+# owner group: storage
+# description: check that the tokenize() result cache never returns a wrong value.
+#
+# 缓存实现要点（src/sql/engine/expr/ob_expr_tokenize.cpp）：
+#   进程级单例 / 固定槽位直接映射 / 键只存哈希 + 命中前逐字节比对 / 累计超过阈值整体清空。
+# 因此必须保证：
+#   1) 同一输入重复调用结果完全一致；
+#   2) 不同输入落到同一槽位时不会互相串结果；
+#   3) 键必须包含**分词器名与选项**，否则 'ik' 与 'beng'、不同 options 会撞在一起；
+#   4) 缓存被灌满/清空后，之前算过的输入仍然得到原结果。
+
+--disable_warnings
+drop database if exists fts_tok_cache;
+create database fts_tok_cache;
+--enable_warnings
+use fts_tok_cache;
+set ob_query_timeout = 10000000000;
+
+--result_format 4
+
+# ---- 1. 同一输入重复调用（命中路径）结果一致 ----
+select tokenize('全文索引 分词器 热路径', 'ik');
+select tokenize('全文索引 分词器 热路径', 'ik');
+select tokenize('全文索引 分词器 热路径', 'ik');
+
+select tokenize('the quick brown fox', 'beng');
+select tokenize('the quick brown fox', 'beng');
+
+# ---- 2. 交替调用（两条不同输入争同一槽位时不得串结果）----
+select tokenize('倒排索引', 'ik');
+select tokenize('inverted index', 'beng');
+select tokenize('倒排索引', 'ik');
+select tokenize('inverted index', 'beng');
+select tokenize('倒排索引', 'ik');
+
+# ---- 3. 键必须区分分词器：同一文本用不同分词器 ----
+select tokenize('hello world', 'space');
+select tokenize('hello world', 'beng');
+select tokenize('hello world', 'ngram');
+select tokenize('hello world', 'space');
+select tokenize('hello world', 'beng');
+
+# ---- 4. 键必须区分选项：同一文本不同 options ----
+select tokenize('hello world', 'space', '[{"output": "all"}]');
+select tokenize('hello world', 'space', '[{"output": "default"}]');
+select tokenize('hello world', 'space', '[{"output": "all"}]');
+select tokenize('hello world', 'ngram', '[{"output": "all"}, {"additional_args": [{"ngram_token_size": 2}]}]');
+select tokenize('hello world', 'ngram', '[{"output": "all"}, {"additional_args": [{"ngram_token_size": 3}]}]');
+select tokenize('hello world', 'ngram', '[{"output": "all"}, {"additional_args": [{"ngram_token_size": 2}]}]');
+
+# ---- 5. 大小写与空白敏感 ----
+select tokenize('OceanBase', 'beng');
+select tokenize('oceanbase', 'beng');
+select tokenize('OceanBase', 'beng');
+select tokenize('  a  b  ', 'space');
+select tokenize('a b', 'space');
+select tokenize('  a  b  ', 'space');
+
+# ---- 6. 灌入大量互不相同的输入后，早先的输入仍得到原结果 ----
+select tokenize('FIRST-SENTINEL 全文索引 sentinel', 'ik');
+select tokenize('doc-0001 全文索引的分词器热路径优化包括解析器实例复用', 'ik');
+select tokenize('doc-0002 倒排索引是全文检索的核心数据结构', 'ik');
+select tokenize('doc-0003 OceanBase 是一款稳定的数据库', 'ik');
+select tokenize('doc-0004 中文分词 ik 词典加载机制', 'ik');
+select tokenize('doc-0005 停用词过滤的全局单例实现', 'ik');
+select tokenize('doc-0006 搜索引擎召回率调优笔记', 'ik');
+select tokenize('doc-0007 分布式存储 compaction 策略', 'ik');
+select tokenize('doc-0008 SQL 执行计划与索引选择', 'ik');
+select tokenize('doc-0009 日志系统内存池化设计', 'ik');
+select tokenize('doc-0010 全文索引分词器热路径分析', 'ik');
+select tokenize('doc-0011 数据库性能优化实践', 'ik');
+select tokenize('doc-0012 倒排索引与检索系统设计', 'ik');
+select tokenize('doc-0013 全文索引的分词器热路径优化包括解析器实例复用', 'ik');
+select tokenize('doc-0014 倒排索引是全文检索的核心数据结构', 'ik');
+select tokenize('doc-0015 OceanBase 是一款稳定的数据库', 'ik');
+select tokenize('doc-0016 中文分词 ik 词典加载机制', 'ik');
+select tokenize('FIRST-SENTINEL 全文索引 sentinel', 'ik');
+
+# ---- 7. 缓存不得影响 MATCH 语义 ----
+create table t1 (id int primary key, title varchar(100), body text,
+                 fulltext index fti(title, body) with parser ik) default charset utf8mb4;
+
+insert into t1 values (1, '全文索引', '倒排索引是全文检索的核心数据结构');
+insert into t1 values (2, '倒排索引', '全文索引的分词器热路径优化');
+insert into t1 values (3, 'OceanBase', 'OceanBase 是一款稳定的数据库');
+
+select count(*) from t1 where match(title, body) against('倒排索引');
+select count(*) from t1 where match(title, body) against('倒排索引');
+select id from t1 where match(title, body) against('倒排索引') order by id;
+select id from t1 where match(title, body) against('倒排索引') order by id;
+
+--disable_warnings
+drop table if exists t1;
+drop database if exists fts_tok_cache;
+--enable_warnings
