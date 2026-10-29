@@ -12891,12 +12891,30 @@ int ObTransformUtils::check_need_calc_match_score(ObExecContext *exec_ctx,
       }
     }
     if (OB_SUCC(ret) && !need_calc) {
-      // The row only exists in the result because the inverted index matched it,
-      // so the predicate is constant once the row is produced.
-      ObExprConstraint constraint(match_expr, PreCalcExprExpectResult::PRE_CALC_RESULT_TRUE);
-      constraint.ignore_const_check_ = true;
-      if (OB_FAIL(constraints.push_back(constraint))) {
-        LOG_WARN("failed to push match constraint", K(ret));
+      // The inverted index only produces rows it matched, so a predicate that is
+      // nothing but that match is already satisfied for every row that reaches
+      // it. Drop it instead of evaluating it: evaluating it would need the score
+      // that is no longer computed. Only a top level conjunct is dropped. When
+      // the match sits anywhere else the condition cannot be proven redundant,
+      // and the score is kept instead of guessing.
+      ObIArray<ObRawExpr*> &conds = stmt->get_condition_exprs();
+      int64_t matched_cond = -1;
+      for (int64_t i = 0; matched_cond < 0 && i < conds.count(); ++i) {
+        ObRawExpr *cond = conds.at(i);
+        if (OB_ISNULL(cond)) {
+          continue;
+        } else if (cond == match_expr) {
+          matched_cond = i;
+        } else if (T_OP_BOOL == cond->get_expr_type()
+                   && 1 == cond->get_param_count()
+                   && cond->get_param_expr(0) == match_expr) {
+          matched_cond = i;
+        }
+      }
+      if (matched_cond < 0) {
+        need_calc = true;
+      } else if (OB_FAIL(conds.remove(matched_cond))) {
+        LOG_WARN("failed to remove the redundant match condition", K(ret));
       }
     }
   }
