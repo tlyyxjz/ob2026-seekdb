@@ -2086,13 +2086,21 @@ int ObDDLResolver::resolve_normal_column_attribute(ObColumnSchemaV2 &column,
       switch (attr_node->type_) {
       case T_AI_COLUMN_EXPR: {
         // <type> AI COLUMN (<ai function>) [WITH (...)] on a column definition.
-        // The clause is parsed already, but the metadata table, the hidden state
-        // columns and the async worker are not implemented yet, so the DDL is
-        // refused instead of producing a column that could never be filled.
-        ret = OB_NOT_SUPPORTED;
-        LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI column");
-        SQL_RESV_LOG(WARN, "AI column DDL is not implemented yet", K(ret),
-                     K(column.get_column_name_str()));
+        // The column itself keeps its declared type; ObCreateTableResolver turns this
+        // attribute into the hidden state columns described by __all_ai_column. Reject
+        // shapes that can never be an AI column here, before any schema is published.
+        ParseNode *ai_call = attr_node->children_[0];
+        if (OB_ISNULL(ai_call)) {
+          ret = OB_ERR_UNEXPECTED;
+          SQL_RESV_LOG(WARN, "AI column call is null", K(ret),
+                       K(column.get_column_name_str()));
+        } else if (T_FUN_SYS_AI_COMPLETE != ai_call->type_
+                   && T_FUN_SYS_AI_EMBED != ai_call->type_) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI column without AI_COMPLETE or AI_EMBED");
+          SQL_RESV_LOG(WARN, "AI column requires an AI function", K(ret),
+                       K(column.get_column_name_str()), K(ai_call->type_));
+        }
         break;
       }
       case T_CONSTR_NOT_NULL: {

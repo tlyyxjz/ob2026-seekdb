@@ -137,6 +137,191 @@ int ObCreateTableResolver::add_hidden_tablet_seq_col()
   return ret;
 }
 
+// AI column support.
+//
+// A column declared as "<type> AI COLUMN (AI_COMPLETE(...)) WITH (...)" materialises
+// three hidden companion columns that hold the per row state machine, the request id
+// shared by every AI column of the same row, and the result spec that lets the worker
+// invalidate a stale answer. The metadata the root service later needs in
+// __all_ai_column is carried in the comment of the state column: ObColumnSchemaV2 has
+// no spare field for it, and extended_type_info is already taken by vector columns,
+// which keep their dimension there.
+static const char *AI_COLUMN_STATE_PREFIX = "__ai_state_";
+static const char *AI_COLUMN_REQUEST_PREFIX = "__ai_request_";
+static const char *AI_COLUMN_RESULT_PREFIX = "__ai_result_";
+static const char AI_COLUMN_META_SEP = '\x01';
+
+static const ParseNode *find_ai_column_attribute(const ParseNode *column_definition)
+{
+  const ParseNode *attr_node = NULL;
+  if (NULL != column_definition && column_definition->num_child_ > 2) {
+    const ParseNode *attrs = column_definition->children_[2];
+    for (int64_t i = 0; NULL == attr_node && NULL != attrs && i < attrs->num_child_; ++i) {
+      if (NULL != attrs->children_[i] && T_AI_COLUMN_EXPR == attrs->children_[i]->type_) {
+        attr_node = attrs->children_[i];
+      }
+    }
+  }
+  return attr_node;
+}
+
+// AI COLUMN (...) WITH (max_retries = 2, sync_mode = 'async')
+static int read_ai_column_options(const ParseNode *option_node,
+                                 int64_t &max_retries,
+                                 int64_t &sync_mode)
+{
+  int ret = OB_SUCCESS;
+  max_retries = 0;
+  sync_mode = 1; // async
+  const ParseNode *cursor = option_node;
+  while (OB_SUCC(ret) && NULL != cursor) {
+    const ParseNode *one = cursor;
+    if (T_LINK_NODE == cursor->type_) {
+      one = cursor->children_[0];
+      cursor = cursor->children_[1];
+    } else {
+      cursor = NULL;
+    }
+    if (NULL == one || T_OP_EQ != one->type_ || 2 != one->num_child_) {
+      continue;
+    }
+    const ParseNode *key_node = one->children_[0];
+    const ParseNode *value_node = one->children_[1];
+    if (NULL == key_node || NULL == value_node) {
+      continue;
+    }
+    ObString key(key_node->str_len_, key_node->str_value_);
+    if (0 == key.case_compare("max_retries")) {
+      if (T_INTNUM == value_node->type_) {
+        max_retries = value_node->value_;
+      }
+    } else if (0 == key.case_compare("sync_mode")) {
+      ObString mode(value_node->str_len_, value_node->str_value_);
+      sync_mode = 0 == mode.case_compare("sync") ? 0 : 1;
+    } else if (0 == key.case_compare("describe")) {
+      // accepted, no per column storage yet
+    } else {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI column option");
+    }
+  }
+  return ret;
+}
+
+// The instruction appended to the prompt is matched verbatim by the mock model,
+// see ai_column_mock.py, so these strings must not be reworded.
+static const char *ai_column_type_instruction(const ObColumnSchemaV2 &ai_column)
+{
+  const char *instruction = "";
+  if (ob_is_json_tc(ai_column.get_data_type())) {
+    instruction = "Return exactly one valid JSON value";
+  } else if (ob_is_integer_type(ai_column.get_data_type())) {
+    instruction = "Answer with a single base-10 integer";
+  }
+  return instruction;
+}
+
+static int build_ai_column_hidden_columns(const ParseNode *attr_node,
+                                          const ObColumnSchemaV2 &ai_column,
+                                          uint64_t &next_column_id,
+                                          ObIArray<ObColumnSchemaV2> &hidden_cols)
+{
+  int ret = OB_SUCCESS;
+  const ParseNode *ai_call = NULL;
+  const ParseNode *args = NULL;
+  const ParseNode *model_node = NULL;
+  ObString model_name;
+  int64_t max_retries = 0;
+  int64_t sync_mode = 1;
+  if (OB_ISNULL(attr_node) || attr_node->num_child_ < 1) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid AI column node", K(ret));
+  } else if (OB_ISNULL(ai_call = attr_node->children_[0])) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(args = ai_call->children_[1]) || args->num_child_ < 1) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("AI column call has no arguments", K(ret));
+  } else if (OB_ISNULL(model_node = args->children_[0]) || NULL == model_node->str_value_) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("AI column call has no model name", K(ret));
+  } else if (OB_FAIL(read_ai_column_options(attr_node->children_[1], max_retries, sync_mode))) {
+  } else {
+    model_name.assign_ptr(model_node->str_value_, model_node->str_len_);
+    const char *instruction = ai_column_type_instruction(ai_column);
+    ObString ai_expr(attr_node->str_len_, attr_node->str_value_);
+    char meta_buf[4096];
+    int64_t meta_len = snprintf(meta_buf, sizeof(meta_buf), "%ld%c%ld%c%.*s%c%.*s%c%s",
+                                max_retries,
+                                AI_COLUMN_META_SEP,
+                                sync_mode,
+                                AI_COLUMN_META_SEP,
+                                model_name.length(), model_name.ptr(),
+                                AI_COLUMN_META_SEP,
+                                ai_expr.length(), ai_expr.ptr(),
+                                AI_COLUMN_META_SEP,
+                                instruction);
+    if (OB_UNLIKELY(meta_len <= 0 || meta_len >= static_cast<int64_t>(sizeof(meta_buf)))) {
+      ret = OB_SIZE_OVERFLOW;
+      LOG_WARN("AI column metadata too long", K(ret), K(meta_len), K(ai_column.get_column_name_str()));
+    } else {
+      const char *prefixes[] = {AI_COLUMN_STATE_PREFIX,
+                                AI_COLUMN_REQUEST_PREFIX,
+                                AI_COLUMN_RESULT_PREFIX};
+      const ColumnType types[] = {ObInt32Type, ObUInt64Type, ObLongTextType};
+      for (int64_t i = 0; OB_SUCC(ret) && i < 3; ++i) {
+        ObColumnSchemaV2 hidden_col;
+        char name_buf[256];
+        int64_t name_len = snprintf(name_buf, sizeof(name_buf), "%s%.*s",
+                                    prefixes[i],
+                                    ai_column.get_column_name_str().length(),
+                                    ai_column.get_column_name());
+        hidden_col.reset();
+        if (OB_UNLIKELY(name_len <= 0 || name_len >= static_cast<int64_t>(sizeof(name_buf)))) {
+          ret = OB_SIZE_OVERFLOW;
+          LOG_WARN("AI hidden column name too long", K(ret), K(name_len));
+        } else if (OB_FAIL(hidden_col.set_column_name(name_buf))) {
+        } else if (OB_FAIL(hidden_col.set_comment(meta_buf))) {
+        } else {
+          hidden_col.set_column_id(next_column_id++);
+          hidden_col.set_data_type(types[i]);
+          hidden_col.set_nullable(true);
+          hidden_col.set_is_hidden(true);
+          if (ObLongTextType == types[i]) {
+            hidden_col.set_charset_type(CHARSET_UTF8MB4);
+            hidden_col.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+          } else {
+            hidden_col.set_charset_type(CHARSET_BINARY);
+            hidden_col.set_collation_type(CS_TYPE_BINARY);
+          }
+          if (OB_FAIL(hidden_cols.push_back(hidden_col))) {
+            LOG_WARN("push hidden AI column failed", K(ret));
+          }
+        }
+      }
+    }
+  }
+  return ret;
+}
+
+int ObCreateTableResolver::append_ai_column_hidden_columns(const ParseNode *attr_node,
+                                                           const ObColumnSchemaV2 &ai_column,
+                                                           ObIArray<ObColumnSchemaV2> &hidden_cols)
+{
+  int ret = OB_SUCCESS;
+  uint64_t next_column_id = cur_column_id_ + 1;
+  ObSEArray<ObColumnSchemaV2, 3> built;
+  if (OB_FAIL(build_ai_column_hidden_columns(attr_node, ai_column, next_column_id, built))) {
+  } else {
+    cur_column_id_ = next_column_id - 1;
+    for (int64_t i = 0; OB_SUCC(ret) && i < built.count(); ++i) {
+      if (OB_FAIL(hidden_cols.push_back(built.at(i)))) {
+        LOG_WARN("push AI hidden column failed", K(ret), K(i));
+      }
+    }
+  }
+  return ret;
+}
+
 // Set additional information for the temporary table
 int ObCreateTableResolver::set_temp_table_info(ObTableSchema &table_schema, ParseNode *commit_option_node)
 {
@@ -619,6 +804,11 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
                  K(ret), K(node->type_), K(node->num_child_));
   } else {
     ObSEArray<ObString, 4> gen_col_expr_arr;
+    // Hidden companion columns of the columns declared with AI COLUMN (...). They are
+    // appended to resolved_cols once every user column has its final column id.
+    ObSEArray<ObColumnSchemaV2, 8> ai_hidden_cols;
+    ObSEArray<uint64_t, 4> ai_column_ids;
+    ObSEArray<const ParseNode *, 4> ai_attr_nodes;
     ParseNode *primary_node = NULL;
     ParseNode *primary_node_in_heap_table = NULL;
     ObCreateTableStmt *create_table_stmt = static_cast<ObCreateTableStmt*>(stmt_);
@@ -834,6 +1024,18 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
             }
           }
 
+          // A column declared with AI COLUMN (...) also materialises its hidden state,
+          // request and result spec columns. They are built once every user column has
+          // its final id so that their ids stay contiguous at the end of the table.
+          if (OB_SUCC(ret)) {
+            const ParseNode *ai_attr = find_ai_column_attribute(element);
+            if (NULL != ai_attr) {
+              if (OB_FAIL(ai_column_ids.push_back(column.get_column_id()))) {
+              } else if (OB_FAIL(ai_attr_nodes.push_back(ai_attr))) {
+              }
+            }
+          }
+
           if (OB_SUCC(ret) && !column.is_invisible_column()) {
             has_visible_col = true;
           }
@@ -881,6 +1083,33 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
         // won't be here
         ret = OB_ERR_UNEXPECTED;
         SQL_RESV_LOG(WARN, "unexpected branch", K(ret));
+      }
+    }
+
+    // Build the hidden AI columns now that every user column id is fixed, so their
+    // ids are contiguous and never interleave with a user column id.
+    for (int64_t i = 0; OB_SUCC(ret) && i < ai_column_ids.count(); ++i) {
+      const ObColumnSchemaV2 *ai_column = NULL;
+      for (int64_t j = 0; NULL == ai_column && j < resolved_cols.count(); ++j) {
+        if (resolved_cols.at(j).get_column_id() == ai_column_ids.at(i)) {
+          ai_column = &resolved_cols.at(j);
+        }
+      }
+      if (OB_ISNULL(ai_column)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("AI column vanished from resolved columns", K(ret), K(ai_column_ids.at(i)));
+      } else if (OB_FAIL(append_ai_column_hidden_columns(ai_attr_nodes.at(i),
+                                                          *ai_column,
+                                                          ai_hidden_cols))) {
+        LOG_WARN("build AI hidden columns failed", K(ret), K(ai_column->get_column_name_str()));
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < ai_hidden_cols.count(); ++i) {
+        if (OB_FAIL(resolved_cols.push_back(ai_hidden_cols.at(i)))) {
+          LOG_WARN("push AI hidden column into resolved columns failed", K(ret), K(i));
+        }
       }
     }
 

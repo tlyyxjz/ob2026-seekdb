@@ -6245,8 +6245,13 @@ not NULLX
 }
 | AI COLUMN '(' expr ')' opt_ai_column_options
 {
-  /* <type> AI COLUMN ( AI_COMPLETE('model', <expr>) ) WITH (sync_mode='async', max_retries=N) */
+  /* <type> AI COLUMN ( AI_COMPLETE('model', <expr>) ) WITH (sync_mode='async', max_retries=N)
+   * The verbatim AI call text is kept on the node so that the metadata table can
+   * persist an expression the worker is able to re-evaluate per row. */
   malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_EXPR, 2, $4, $6);
+  if (NULL != $$) {
+    dup_expr_string($$, result, @4.first_column, @4.last_column - 1);
+  }
 }
 ;
 
