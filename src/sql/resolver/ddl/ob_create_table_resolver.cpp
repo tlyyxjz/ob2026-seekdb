@@ -192,7 +192,7 @@ static int read_ai_column_options(const ParseNode *option_node,
     }
     ObString key(key_node->str_len_, key_node->str_value_);
     if (0 == key.case_compare("max_retries")) {
-      if (T_INTNUM == value_node->type_) {
+      if (T_NUMBER == value_node->type_) {
         max_retries = value_node->value_;
       }
     } else if (0 == key.case_compare("sync_mode")) {
@@ -250,7 +250,7 @@ static int check_ai_embed_dimension(const ParseNode *ai_call,
   int ret = OB_SUCCESS;
   if (2 == ai_column_function_kind(ai_call) && NULL != args && args->num_child_ >= 3) {
     const ParseNode *dim_node = args->children_[2];
-    if (NULL != dim_node && T_INTNUM == dim_node->type_) {
+    if (NULL != dim_node && T_NUMBER == dim_node->type_) {
       const int64_t requested_dim = dim_node->value_;
       int64_t declared_dim = 0;
       if (OB_FAIL(ObVectorIndexUtil::get_vector_dim_from_extend_type_info(
@@ -340,7 +340,7 @@ static int build_ai_column_hidden_columns(const ParseNode *attr_node,
       const char *prefixes[] = {AI_COLUMN_STATE_PREFIX,
                                 AI_COLUMN_REQUEST_PREFIX,
                                 AI_COLUMN_RESULT_PREFIX};
-      const ColumnType types[] = {ObInt32Type, ObUInt64Type, ObLongTextType};
+      const ObObjType types[] = {ObInt32Type, ObUInt64Type, ObLongTextType};
       for (int64_t i = 0; OB_SUCC(ret) && i < 3; ++i) {
         ObColumnSchemaV2 hidden_col;
         char name_buf[256];
