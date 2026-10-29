@@ -46,6 +46,9 @@ jobs:
       shell: bash
       run: |
         set -euo pipefail
+        sudo sysctl -w kernel.core_pattern=/tmp/core.%p >/dev/null 2>&1 || true
+        ulimit -c unlimited || true
+        echo "core_pattern=$(cat /proc/sys/kernel/core_pattern) ulimit_c=$(ulimit -c)"
         python3 .github/script/seekdb/bench_runner.py \
           --seekdb build_release/src/observer/seekdb \
           --obclient deps/3rd/u01/obclient/bin/obclient \
@@ -72,9 +75,17 @@ jobs:
         for f in "$LOGDIR"/*.log*; do
           [ -f "$f" ] || continue
           echo "=== $f : $(wc -l < "$f") lines ==="
-          grep -inE "SIGSEGV|SIGABRT|SIGBUS|assert|backtrace|errcode=-4[0-9]{3}|error|crash|abort|fatal" "$f" | tail -60 || true
-          echo "--- tail 80 ---"
-          tail -80 "$f" || true
+          grep -nE "SIGSEGV|SIGABRT|SIGBUS|ASSERT|assert fail|backtrace|errcode=-4[0-9]{3}|\] ERROR |FATAL" "$f" | tail -40 || true
+          echo "--- tail 40 ---"
+          tail -40 "$f" | cut -c1-260 || true
+        done
+        echo "=== cores ==="
+        ls -la /tmp/core.* 2>/dev/null || echo "no core file"
+        echo "=== stack ==="
+        for c in /tmp/core.*; do
+          [ -f "$c" ] || continue
+          gdb -batch -nx -ex "bt 40" build_release/src/observer/seekdb "$c" 2>&1 | tail -60 || true
+          break
         done
         echo "=== kernel ==="
         dmesg 2>/dev/null | tail -15 || true
@@ -106,6 +117,5 @@ jobs:
           bench.log
           bench_out/report.txt
           bench_out/score.txt
-          bench_out/instance/log/observer.log
-          bench_out/instance/log/console.log
+          bench_out/instance/log/*.log
         if-no-files-found: warn

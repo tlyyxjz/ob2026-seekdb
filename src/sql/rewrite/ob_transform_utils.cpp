@@ -12891,30 +12891,30 @@ int ObTransformUtils::check_need_calc_match_score(ObExecContext *exec_ctx,
       }
     }
     if (OB_SUCC(ret) && !need_calc) {
-      // The inverted index only produces rows it matched, so a predicate that is
-      // nothing but that match is already satisfied for every row that reaches
-      // it. Drop it instead of evaluating it: evaluating it would need the score
-      // that is no longer computed. Only a top level conjunct is dropped. When
-      // the match sits anywhere else the condition cannot be proven redundant,
-      // and the score is kept instead of guessing.
+      // Nothing above reads the score, but the predicate still has to be one the
+      // access path already guarantees. The inverted index only produces rows it
+      // matched, so a top level "*pure* match" conjunct is already satisfied for
+      // every row that reaches the filter and needs no score to re-evaluate.
+      // When the match sits anywhere else, that cannot be argued, so the score
+      // is kept instead of guessing. The statement is only inspected here: it is
+      // still being planned, and rewriting its condition list mid-planning would
+      // leave the already built access path and the statement disagreeing.
       ObIArray<ObRawExpr*> &conds = stmt->get_condition_exprs();
-      int64_t matched_cond = -1;
-      for (int64_t i = 0; matched_cond < 0 && i < conds.count(); ++i) {
+      bool found_top_level_match = false;
+      for (int64_t i = 0; !found_top_level_match && i < conds.count(); ++i) {
         ObRawExpr *cond = conds.at(i);
         if (OB_ISNULL(cond)) {
           continue;
         } else if (cond == match_expr) {
-          matched_cond = i;
+          found_top_level_match = true;
         } else if (T_OP_BOOL == cond->get_expr_type()
                    && 1 == cond->get_param_count()
                    && cond->get_param_expr(0) == match_expr) {
-          matched_cond = i;
+          found_top_level_match = true;
         }
       }
-      if (matched_cond < 0) {
+      if (!found_top_level_match) {
         need_calc = true;
-      } else if (OB_FAIL(conds.remove(matched_cond))) {
-        LOG_WARN("failed to remove the redundant match condition", K(ret));
       }
     }
   }
