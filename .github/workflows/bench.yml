@@ -83,18 +83,30 @@ jobs:
         ls -la /tmp/core.* 2>/dev/null || echo "no core file"
         echo "=== gdb ==="
         if ! command -v gdb >/dev/null 2>&1; then
-          sudo apt-get update -qq >/dev/null 2>&1 || true
-          sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+          echo "--- apt update ---"
+          sudo apt-get update 2>&1 | tail -5 || true
+          echo "--- apt install ---"
+          sudo apt-get install -y --no-install-recommends gdb 2>&1 | tail -5 || true
         fi
+        echo "--- which ---"
+        ls -la /usr/bin/gdb* 2>/dev/null || echo "no /usr/bin/gdb"
         command -v gdb || echo "gdb unavailable"
+        command -v lldb || echo "lldb unavailable"
         file build_release/src/observer/seekdb | cut -c1-200
         echo "=== stack ==="
         for c in /tmp/core.*; do
           [ -f "$c" ] || continue
-          gdb -batch -nx -iex "set pagination off" -iex "set print frame-arguments none" \
-            -ex "thread apply all bt 25" \
-            -ex "bt 60" \
-            build_release/src/observer/seekdb "$c" 2>&1 | tail -200 || true
+          if command -v gdb >/dev/null 2>&1; then
+            gdb -batch -nx -iex "set pagination off" -iex "set print frame-arguments none" \
+              -ex "thread apply all bt 25" \
+              -ex "bt 60" \
+              build_release/src/observer/seekdb "$c" 2>&1 | tail -200 || true
+          elif command -v lldb >/dev/null 2>&1; then
+            lldb -c "$c" --batch -o "thread backtrace all" -o "bt 60" \
+              build_release/src/observer/seekdb 2>&1 | tail -200 || true
+          else
+            echo "no debugger available"
+          fi
           break
         done
         echo "=== kernel ==="

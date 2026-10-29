@@ -321,10 +321,13 @@ log "[5/5] MATCH query ..."
 # plan without running the scan, so if the server dies here the fault is in plan
 # or code generation rather than in the iteration itself.
 log "[5/5a] explain probe (plan only, no scan)"
-if "${MYSQL_VERBOSE}" -e "EXPLAIN SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器');" 2>&1 | tail -15; then
+probe_out=$(${MYSQL_VERBOSE} -e "EXPLAIN SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器');" 2>&1)
+probe_rc=$?
+printf '%s\n' "${probe_out}" | tail -15
+if [[ ${probe_rc} -eq 0 ]]; then
   log "[5/5a] explain probe OK"
 else
-  log "[5/5a] explain probe FAILED"
+  log "[5/5a] explain probe FAILED rc=${probe_rc}"
 fi
 run_query_bench "query_cn" \
   "SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器');"
