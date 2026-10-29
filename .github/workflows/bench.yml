@@ -81,12 +81,23 @@ jobs:
         done
         echo "=== cores ==="
         ls -la /tmp/core.* 2>/dev/null || echo "no core file"
+        echo "=== core header (signal, no debugger needed) ==="
+        for c in /tmp/core.*; do
+          [ -f "$c" ] || continue
+          file "$c" || true
+          break
+        done
         echo "=== gdb ==="
         if ! command -v gdb >/dev/null 2>&1; then
           echo "--- apt update ---"
           sudo apt-get update 2>&1 | tail -5 || true
-          echo "--- apt install ---"
-          sudo apt-get install -y --no-install-recommends gdb 2>&1 | tail -5 || true
+          echo "--- apt install (backports first: the runner holds elfutils 0.188 from backports) ---"
+          sudo apt-get install -y --no-install-recommends -t jammy-backports gdb 2>&1 | tail -8 || true
+          if ! command -v gdb >/dev/null 2>&1; then
+            echo "--- fallback: align elfutils down to the archive version ---"
+            sudo apt-get install -y --no-install-recommends --allow-downgrades \
+              libelf1=0.186-1build1 libdw1=0.186-1build1 gdb 2>&1 | tail -8 || true
+          fi
         fi
         echo "--- which ---"
         ls -la /usr/bin/gdb* 2>/dev/null || echo "no /usr/bin/gdb"
