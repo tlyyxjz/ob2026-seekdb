@@ -2000,6 +2000,12 @@ private:
                             ObIArray<ObRawExpr*> &view_exprs);
 
 public:
+  static int check_need_calc_match_score(ObExecContext *exec_ctx,
+                                         ObDMLStmt *stmt,
+                                         ObRawExpr *match_expr,
+                                         bool &need_calc,
+                                         ObIArray<ObExprConstraint> &constraints);
+
   static int extract_shared_exprs(ObDMLStmt *parent, 
                                   ObSelectStmt *view_stmt,
                                   ObIArray<ObRawExpr *> &common_exprs,
@@ -2040,11 +2046,6 @@ private:
                                        ObIArray<ObRawExpr*> &outer_conditions,
                                        ObIArray<TableItem*> &right_tables,
                                        ObIArray<ObSEArray<ObRawExpr*, 4>> &new_outer_conds);
-  static int check_need_calc_match_score(ObExecContext *exec_ctx,
-                                         ObDMLStmt *stmt,
-                                         ObRawExpr *match_expr,
-                                         bool &need_calc,
-                                         ObIArray<ObExprConstraint> &constraints);
   static int inner_check_need_calc_match_score(ObExecContext *exec_ctx,
                                               ObRawExpr* expr, 
                                               ObRawExpr* match_expr, 

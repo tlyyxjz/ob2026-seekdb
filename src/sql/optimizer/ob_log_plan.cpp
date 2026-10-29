@@ -12253,7 +12253,7 @@ int ObLogPlan::prepare_text_retrieval_info(const uint64_t ref_table_id,
   }
   if (OB_SUCC(ret)) {
     if (OB_FAIL(ObTransformUtils::check_need_calc_match_score(get_optimizer_context().get_exec_ctx(),
-                                                              get_stmt(),
+                                                              const_cast<ObDMLStmt *>(get_stmt()),
                                                               match_against,
                                                               need_calc_relevance,
                                                               constraints))) {
