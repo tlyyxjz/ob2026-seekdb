@@ -221,6 +221,78 @@ static const char *ai_column_type_instruction(const ObColumnSchemaV2 &ai_column)
   return instruction;
 }
 
+// AI_COMPLETE(...) and AI_EMBED(...) are ordinary function calls at parse time; the
+// dedicated expression node types only appear after expression resolution. Returns
+// 1 for AI_COMPLETE, 2 for AI_EMBED and 0 for anything else.
+static int ai_column_function_kind(const ParseNode *ai_call)
+{
+  int kind = 0;
+  if (NULL != ai_call && T_FUN_SYS == ai_call->type_) {
+    const ParseNode *name_node = ai_call->children_[0];
+    if (NULL != name_node && NULL != name_node->str_value_) {
+      ObString name(name_node->str_len_, name_node->str_value_);
+      if (0 == name.case_compare("ai_complete")) {
+        kind = 1;
+      } else if (0 == name.case_compare("ai_embed")) {
+        kind = 2;
+      }
+    }
+  }
+  return kind;
+}
+
+// AI_EMBED('model', <expr>, <dim>): when the dimension is spelled out it has to match
+// the dimension the vector column was declared with.
+static int check_ai_embed_dimension(const ParseNode *ai_call,
+                                    const ParseNode *args,
+                                    const ObColumnSchemaV2 &ai_column)
+{
+  int ret = OB_SUCCESS;
+  if (2 == ai_column_function_kind(ai_call) && NULL != args && args->num_child_ >= 3) {
+    const ParseNode *dim_node = args->children_[2];
+    if (NULL != dim_node && T_INTNUM == dim_node->type_) {
+      const int64_t requested_dim = dim_node->value_;
+      int64_t declared_dim = 0;
+      if (OB_FAIL(ObVectorIndexUtil::get_vector_dim_from_extend_type_info(
+              ai_column.get_extended_type_info(), declared_dim))) {
+        LOG_WARN("read vector dimension failed", K(ret));
+      } else if (declared_dim > 0 && declared_dim != requested_dim) {
+        ret = OB_ERR_INVALID_VECTOR_DIM;
+        LOG_USER_ERROR(OB_ERR_INVALID_VECTOR_DIM,
+                       static_cast<uint32_t>(declared_dim),
+                       static_cast<uint32_t>(requested_dim));
+        LOG_WARN("AI_EMBED dimension does not match the column", K(ret),
+                 K(declared_dim), K(requested_dim), K(ai_column.get_column_name_str()));
+      }
+    }
+  }
+  return ret;
+}
+
+static bool ai_column_identifier_char(char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+      || (c >= '0' && c <= '9') || '_' == c || '`' == c;
+}
+
+// True when name appears in text as a whole identifier, so that "first_ai" is not
+// reported for an expression mentioning "first_ai_backup".
+static bool ai_column_expr_references(const ObString &text, const ObString &name)
+{
+  bool found = false;
+  if (name.length() > 0 && text.length() >= name.length()) {
+    for (int32_t i = 0; !found && i + name.length() <= text.length(); ++i) {
+      if (0 == MEMCMP(text.ptr() + i, name.ptr(), name.length())) {
+        const int32_t end = i + name.length();
+        const bool left_ok = (0 == i) || !ai_column_identifier_char(text[i - 1]);
+        const bool right_ok = (end >= text.length()) || !ai_column_identifier_char(text[end]);
+        found = left_ok && right_ok;
+      }
+    }
+  }
+  return found;
+}
+
 static int build_ai_column_hidden_columns(const ParseNode *attr_node,
                                           const ObColumnSchemaV2 &ai_column,
                                           uint64_t &next_column_id,
@@ -245,6 +317,7 @@ static int build_ai_column_hidden_columns(const ParseNode *attr_node,
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("AI column call has no model name", K(ret));
   } else if (OB_FAIL(read_ai_column_options(attr_node->children_[1], max_retries, sync_mode))) {
+  } else if (OB_FAIL(check_ai_embed_dimension(ai_call, args, ai_column))) {
   } else {
     model_name.assign_ptr(model_node->str_value_, model_node->str_len_);
     const char *instruction = ai_column_type_instruction(ai_column);
@@ -1083,6 +1156,39 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
         // won't be here
         ret = OB_ERR_UNEXPECTED;
         SQL_RESV_LOG(WARN, "unexpected branch", K(ret));
+      }
+    }
+
+    // An AI column must not read another AI column: its value only exists once the
+    // worker has run, so there is no fixpoint the resolver could evaluate.
+    for (int64_t i = 0; OB_SUCC(ret) && i < ai_column_ids.count(); ++i) {
+      const ObColumnSchemaV2 *ai_column = NULL;
+      for (int64_t j = 0; NULL == ai_column && j < resolved_cols.count(); ++j) {
+        if (resolved_cols.at(j).get_column_id() == ai_column_ids.at(i)) {
+          ai_column = &resolved_cols.at(j);
+        }
+      }
+      const ParseNode *ai_attr = ai_attr_nodes.at(i);
+      if (NULL == ai_column || NULL == ai_attr || NULL == ai_attr->str_value_) {
+        continue;
+      }
+      ObString expr_text(ai_attr->str_len_, ai_attr->str_value_);
+      for (int64_t j = 0; OB_SUCC(ret) && j < ai_column_ids.count(); ++j) {
+        const ObColumnSchemaV2 *other = NULL;
+        for (int64_t k = 0; NULL == other && k < resolved_cols.count(); ++k) {
+          if (resolved_cols.at(k).get_column_id() == ai_column_ids.at(j)) {
+            other = &resolved_cols.at(k);
+          }
+        }
+        if (i == j || NULL == other) {
+          continue;
+        }
+        if (ai_column_expr_references(expr_text, other->get_column_name_str())) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "AI column depending on another AI column");
+          LOG_WARN("AI column may not read another AI column", K(ret),
+                   K(ai_column->get_column_name_str()), K(other->get_column_name_str()));
+        }
       }
     }
 
