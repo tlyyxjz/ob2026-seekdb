@@ -62,6 +62,23 @@ jobs:
         OUTPUT="$GITHUB_WORKSPACE/bench_out/report.txt" \
         bash tools/benchmark/fts_large_bench.sh 2>&1 | tee bench.log
 
+    - name: Dump observer diagnostics
+      if: failure()
+      shell: bash
+      run: |
+        LOGDIR="$GITHUB_WORKSPACE/bench_out/instance/log"
+        echo "=== log dir ==="
+        ls -la "$LOGDIR" 2>&1 || true
+        for f in "$LOGDIR"/*.log*; do
+          [ -f "$f" ] || continue
+          echo "=== $f : $(wc -l < "$f") lines ==="
+          grep -inE "SIGSEGV|SIGABRT|SIGBUS|assert|backtrace|errcode=-4[0-9]{3}|error|crash|abort|fatal" "$f" | tail -60 || true
+          echo "--- tail 80 ---"
+          tail -80 "$f" || true
+        done
+        echo "=== kernel ==="
+        dmesg 2>/dev/null | tail -15 || true
+
     - name: Score against the checked-in baseline
       if: always()
       shell: bash
@@ -89,4 +106,6 @@ jobs:
           bench.log
           bench_out/report.txt
           bench_out/score.txt
+          bench_out/instance/log/observer.log
+          bench_out/instance/log/console.log
         if-no-files-found: warn
