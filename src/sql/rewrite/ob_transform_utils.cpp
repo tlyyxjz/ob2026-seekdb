@@ -12804,6 +12804,105 @@ bool ObTransformUtils::is_full_group_by(ObSelectStmt& stmt, ObSQLMode mode)
   return !stmt.has_order_by() && is_only_full_group_by_on(mode);
 }
 
+// A fulltext scan always produced a relevance score, because the search used to
+// be scored unconditionally. That forces every MATCH query to run the extra
+// inverted-index aggregation, the forward-index document aggregation and the
+// block-max scan even when the score is dropped, which is the common case: a
+// bare predicate only asks whether the row matched.
+//
+// Decide here whether the value can actually escape. Projection, ordering,
+// grouping and window functions keep the score. A MATCH that only filters keeps
+// none, and once it is pinned to TRUE the downstream plans stop building the
+// scoring pushdowns altogether.
+int ObTransformUtils::check_need_calc_match_score(ObExecContext *exec_ctx,
+                                                  ObDMLStmt *stmt,
+                                                  ObRawExpr *match_expr,
+                                                  bool &need_calc,
+                                                  ObIArray<ObExprConstraint> &constraints)
+{
+  int ret = OB_SUCCESS;
+  bool matched = false;
+  if (OB_ISNULL(exec_ctx) || OB_ISNULL(stmt) || OB_ISNULL(match_expr)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!stmt->is_select_stmt()) {
+    // Only SELECT statements are walked; keep the previous behaviour elsewhere.
+    need_calc = true;
+  } else {
+    ObSelectStmt *select_stmt = static_cast<ObSelectStmt *>(stmt);
+    need_calc = false;
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < select_stmt->get_select_items().count(); ++i) {
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    select_stmt->get_select_items().at(i).expr_,
+                                                    match_expr,
+                                                    matched,
+                                                    constraints))) {
+      } else if (matched) {
+        need_calc = true;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < stmt->get_order_items().count(); ++i) {
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    stmt->get_order_items().at(i).expr_,
+                                                    match_expr,
+                                                    matched,
+                                                    constraints))) {
+      } else if (matched) {
+        need_calc = true;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < select_stmt->get_group_exprs().count(); ++i) {
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    select_stmt->get_group_exprs().at(i),
+                                                    match_expr,
+                                                    matched,
+                                                    constraints))) {
+      } else if (matched) {
+        need_calc = true;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < select_stmt->get_having_exprs().count(); ++i) {
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    select_stmt->get_having_exprs().at(i),
+                                                    match_expr,
+                                                    matched,
+                                                    constraints))) {
+      } else if (matched) {
+        need_calc = true;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < select_stmt->get_window_func_exprs().count(); ++i) {
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    select_stmt->get_window_func_exprs().at(i),
+                                                    match_expr,
+                                                    matched,
+                                                    constraints))) {
+      } else if (matched) {
+        need_calc = true;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !need_calc && i < stmt->get_condition_exprs().count(); ++i) {
+      if (OB_FAIL(inner_check_need_calc_match_score(exec_ctx,
+                                                    stmt->get_condition_exprs().at(i),
+                                                    match_expr,
+                                                    matched,
+                                                    constraints))) {
+      } else if (matched) {
+        need_calc = true;
+      }
+    }
+    if (OB_SUCC(ret) && !need_calc) {
+      // The row only exists in the result because the inverted index matched it,
+      // so the predicate is constant once the row is produced.
+      ObExprConstraint constraint(match_expr, PreCalcExprExpectResult::PRE_CALC_RESULT_TRUE);
+      constraint.ignore_const_check_ = true;
+      if (OB_FAIL(constraints.push_back(constraint))) {
+        LOG_WARN("failed to push match constraint", K(ret));
+      }
+    }
+  }
+  return ret;
+}
+
 int ObTransformUtils::inner_check_need_calc_match_score(ObExecContext *exec_ctx,
                                                         ObRawExpr* expr, 
                                                         ObRawExpr* match_expr, 
