@@ -880,7 +880,11 @@ int ObDASTRTaatIter::check_and_prepare()
   } else if (limit_param_.limit_ > 0 && output_row_cnt_ >= limit_param_.limit_) {
     ret = OB_ITER_END;
   } else if (!doc_cnt_calculated_) {
-    if (OB_FAIL(do_total_doc_cnt())) {
+    if (!ir_ctdef_->need_calc_relevance()) {
+      // Same guard as the base class: without a projected score the plan has no
+      // document aggregate to read the count from.
+      doc_cnt_calculated_ = true;
+    } else if (OB_FAIL(do_total_doc_cnt())) {
       if (OB_UNLIKELY(OB_ITER_END != ret)) {
       } else {
         doc_cnt_calculated_ = true;
@@ -1048,16 +1052,25 @@ int ObDASTRTaatIter::fill_output_exprs(int64_t &count, int64_t safe_capacity)
 int ObDASTRTaatIter::fill_total_doc_cnt()
 {
   int ret = OB_SUCCESS;
-  ObEvalCtx::BatchInfoScopeGuard guard(*ir_rtdef_->eval_ctx_);
-  guard.set_batch_idx(0);
-  ObExpr *total_doc_cnt_expr = ir_ctdef_->get_doc_agg_ctdef()->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
-  if (OB_ISNULL(total_doc_cnt_expr)) {
-      ret = OB_ERR_UNEXPECTED;
+  const ObDASScanCtDef *doc_agg_ctdef = ir_ctdef_->get_doc_agg_ctdef();
+  if (OB_ISNULL(doc_agg_ctdef)) {
+    // The score is not projected, so the plan carries no document aggregate.
+    // The exact count is only a size hint for the per-partition maps, so the
+    // row count estimated during planning serves just as well.
+    total_doc_cnt_ = ir_ctdef_->estimated_total_doc_cnt_ > 0
+        ? ir_ctdef_->estimated_total_doc_cnt_ : 1;
   } else {
-    ObDatum &total_doc_cnt = total_doc_cnt_expr->locate_expr_datum(*ir_rtdef_->eval_ctx_);
-    total_doc_cnt_ = total_doc_cnt.get_int();
-    if (-1 == total_doc_cnt_) {
+    ObEvalCtx::BatchInfoScopeGuard guard(*ir_rtdef_->eval_ctx_);
+    guard.set_batch_idx(0);
+    ObExpr *total_doc_cnt_expr = doc_agg_ctdef->pd_expr_spec_.pd_storage_aggregate_output_.at(0);
+    if (OB_ISNULL(total_doc_cnt_expr)) {
       ret = OB_ERR_UNEXPECTED;
+    } else {
+      ObDatum &total_doc_cnt = total_doc_cnt_expr->locate_expr_datum(*ir_rtdef_->eval_ctx_);
+      total_doc_cnt_ = total_doc_cnt.get_int();
+      if (-1 == total_doc_cnt_) {
+        ret = OB_ERR_UNEXPECTED;
+      }
     }
   }
   return ret;
