@@ -317,6 +317,15 @@ run_tokenize_bench "tokenize_ik" "ik" "${IK_TEXT}"
 run_tokenize_bench "tokenize_beng" "beng" "${BENG_TEXT}"
 
 log "[5/5] MATCH query ..."
+# Distinguish a planning failure from an execution failure: EXPLAIN builds the
+# plan without running the scan, so if the server dies here the fault is in plan
+# or code generation rather than in the iteration itself.
+log "[5/5a] explain probe (plan only, no scan)"
+if "${MYSQL_VERBOSE}" -e "EXPLAIN SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器');" 2>&1 | tail -15; then
+  log "[5/5a] explain probe OK"
+else
+  log "[5/5a] explain probe FAILED"
+fi
 run_query_bench "query_cn" \
   "SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器');"
 run_query_bench "query_beng" \

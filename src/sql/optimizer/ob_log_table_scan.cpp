@@ -704,7 +704,12 @@ int ObLogTableScan::extract_pushdown_filters(ObIArray<ObRawExpr*> &nonpushdown_f
         } else if (is_vec_adaptive_scan()) {
           add_to_scan_filter = true;
         }
-      } else if (is_text_retrieval_scan() && need_text_retrieval_calc_relevance()) {
+      } else if (is_text_retrieval_scan()) {
+        // Whether the score is computed is a property of the score, not of where
+        // a filter is able to run. A text retrieval scan keeps its filters above
+        // the scan either way, because the storage layer does not evaluate a
+        // match predicate. Keying this on the score meant that dropping the
+        // score silently pushed that predicate down into the inverted index scan.
         if (OB_FAIL(nonpushdown_filters.push_back(filters.at(i)))) {
         } else if (is_vec_adaptive_scan()) {
           add_to_scan_filter = true;

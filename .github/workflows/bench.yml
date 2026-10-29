@@ -81,10 +81,20 @@ jobs:
         done
         echo "=== cores ==="
         ls -la /tmp/core.* 2>/dev/null || echo "no core file"
+        echo "=== gdb ==="
+        if ! command -v gdb >/dev/null 2>&1; then
+          sudo apt-get update -qq >/dev/null 2>&1 || true
+          sudo apt-get install -y -qq gdb >/dev/null 2>&1 || true
+        fi
+        command -v gdb || echo "gdb unavailable"
+        file build_release/src/observer/seekdb | cut -c1-200
         echo "=== stack ==="
         for c in /tmp/core.*; do
           [ -f "$c" ] || continue
-          gdb -batch -nx -ex "bt 40" build_release/src/observer/seekdb "$c" 2>&1 | tail -60 || true
+          gdb -batch -nx -iex "set pagination off" -iex "set print frame-arguments none" \
+            -ex "thread apply all bt 25" \
+            -ex "bt 60" \
+            build_release/src/observer/seekdb "$c" 2>&1 | tail -200 || true
           break
         done
         echo "=== kernel ==="
