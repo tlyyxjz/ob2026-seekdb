@@ -63,12 +63,20 @@ namespace {
 // cache miss and never produce a wrong answer. The table is direct mapped; once
 // the stored payloads exceed MAX_TOTAL_BYTES it drops everything, which bounds the
 // footprint without any eviction bookkeeping.
+//
+// The footprint has to cover one bulk index build. A build over 20,000 documents
+// segments every row once per index, and the same column is segmented again when a
+// second index covers it. With the previous 512 slots / 8 MB limit the table was
+// wiped several times per build, so the second pass never saw the first pass's
+// entries and the cache only ever helped repeated TOKENIZE() calls. The table now
+// holds a whole build's worth of results, which is what makes the cross-index reuse
+// actually happen.
 class ObTokenizeResultCache
 {
 public:
-  static const int64_t SLOT_CNT = 512;
+  static const int64_t SLOT_CNT = 32768;
   static const int64_t MAX_RESULT_BYTES = 64 * 1024;
-  static const int64_t MAX_TOTAL_BYTES = 8 * 1024 * 1024;
+  static const int64_t MAX_TOTAL_BYTES = 192 * 1024 * 1024;
 
   struct Entry
   {
