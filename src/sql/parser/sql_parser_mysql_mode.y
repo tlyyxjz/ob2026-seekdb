@@ -259,7 +259,7 @@ END_P SET_VAR DELIMITER
 //-----------------------------reserved keyword end-------------------------------------------------
 %token <non_reserved_keyword>
 //-----------------------------non_reserved keyword begin-------------------------------------------
-        READ_CSV READ_JSON READ_PARQUET GLOB
+        READ_CSV READ_JSON READ_PARQUET GLOB RETRY
         ACCESS ACCOUNT ACTION ACTIVE ADDDATE AFTER AGAINST AGGREGATE AI ALGORITHM ALWAYS ALLOW ANALYSE ANY
         APPROX_COUNT_DISTINCT APPROX_COUNT_DISTINCT_SYNOPSIS APPROX_COUNT_DISTINCT_SYNOPSIS_MERGE
         ARRAY ASCII ASIS AT ATTRIBUTE AUTHORS AUTO AUTOEXTEND_SIZE AUTO_INCREMENT AUTO_INCREMENT_CACHE_SIZE
@@ -388,6 +388,7 @@ END_P SET_VAR DELIMITER
 %type <node> copy_to_file_stmt copy_option_list copy_option copy_option_arg copy_format_name opt_copy_format
 %type <node> expr_list expr expr_const conf_const simple_expr simple_expr_list expr_or_default bit_expr bool_pri predicate explain_or_desc pl_expr_stmt
 %type <node> column_ref multi_delete_table
+%type <node> opt_ai_column_options ai_column_option_list ai_column_option ai_column_option_value
 %type <node> case_expr func_expr in_expr sub_query_flag search_expr
 %type <node> case_arg when_clause_list when_clause case_default
 %type <node> window_function opt_partition_by generalized_window_clause win_rows_or_range win_preceding_or_following win_interval win_bounding win_window opt_win_window win_fun_lead_lag_params respect_or_ignore opt_respect_or_ignore_nulls win_fun_first_last_params first_or_last opt_from_first_or_last new_generalized_window_clause new_generalized_window_clause_with_blanket opt_named_windows named_windows named_window
@@ -6242,6 +6243,46 @@ not NULLX
 {
   malloc_terminal_node($$, result->malloc_pool_, T_INVISIBLE);
 }
+| AI COLUMN '(' expr ')' opt_ai_column_options
+{
+  /* <type> AI COLUMN ( AI_COMPLETE('model', <expr>) ) WITH (sync_mode='async', max_retries=N) */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_EXPR, 2, $4, $6);
+}
+;
+
+opt_ai_column_options:
+/*EMPTY*/
+{ $$ = NULL; }
+| WITH '(' ai_column_option_list ')'
+{ $$ = $3; }
+;
+
+ai_column_option_list:
+ai_column_option
+{ $$ = $1; }
+| ai_column_option_list ',' ai_column_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+ai_column_option:
+NAME_OB opt_equal_mark ai_column_option_value
+{
+  (void)($2); /* make bison mute */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_OP_EQ, 2, $1, $3);
+}
+;
+
+ai_column_option_value:
+STRING_VALUE
+{ $$ = $1; }
+| BOOL_VALUE
+{ $$ = $1; }
+| INTNUM
+{ $$ = $1; }
+| NAME_OB
+{ $$ = $1; }
 ;
 
 opt_column_default_value_list:
@@ -15264,6 +15305,12 @@ ADD COLUMN column_definition
   (void)($2); /* make bison mute */
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_ADD, 1, $3);
 }
+| RETRY AI COLUMN column_definition_ref opt_where
+{
+  (void)($2); /* make bison mute */
+  (void)($3); /* make bison mute */
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_RETRY, 2, $4, $5);
+}
 | ADD column_definition
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_ADD, 1, $2);
@@ -18116,6 +18163,7 @@ ACCOUNT
 |       RETURNED_SQLSTATE
 |       RETURNING
 |       RETURNS
+|       RETRY
 |       REVERSE
 |       REWRITE
 |       ROLE
