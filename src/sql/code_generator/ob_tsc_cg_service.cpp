@@ -3057,7 +3057,13 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
     }
   }
 
-  if (OB_SUCC(ret) && (tr_info.need_calc_relevance_ || nullptr != tr_info.pushdown_match_filter_)) {
+  // The projected score is the column the caller reads back, so it may only be
+  // materialised when the score is really computed. Hoisting it out on a
+  // pushdown filter as well used to be harmless because the score was always
+  // computed; once it is not, this expression still lands in result_output_
+  // while the scan skips every relevance projection, so the column stays
+  // unevaluated and the consumer reads a hole.
+  if (OB_SUCC(ret) && tr_info.need_calc_relevance_) {
     if (OB_FAIL(cg_.generate_rt_expr(*tr_info.match_expr_,
                                             text_ir_scan_ctdef.relevance_proj_col_))) {
     } else if (OB_ISNULL(text_ir_scan_ctdef.relevance_proj_col_)) {
