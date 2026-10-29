@@ -45,14 +45,32 @@ jobs:
     - name: Start seekdb for benchmark
       shell: bash
       run: |
-        set -euo pipefail
+        set -uo pipefail
         sudo sysctl -w kernel.core_pattern=/tmp/core.%p >/dev/null 2>&1 || true
         ulimit -c unlimited || true
         echo "core_pattern=$(cat /proc/sys/kernel/core_pattern) ulimit_c=$(ulimit -c)"
-        python3 .github/script/seekdb/bench_runner.py \
-          --seekdb build_release/src/observer/seekdb \
-          --obclient deps/3rd/u01/obclient/bin/obclient \
-          --base-dir "$GITHUB_WORKSPACE/bench_out/instance"
+        # The bootstrap loads the corpus, and it sometimes exceeds the client timeout on
+        # ANALYZE TABLE __ALL_VIRTUAL_CORE_ALL_TABLE (ERROR 4012) on this runner. That is
+        # runner I/O, not the code under test, so retry the whole bootstrap (it destroys
+        # and re-creates the instance first) instead of burning a 45 minute build on it.
+        ok=0
+        for attempt in 1 2 3; do
+          echo "=== bootstrap attempt ${attempt} ==="
+          if python3 .github/script/seekdb/bench_runner.py \
+               --seekdb build_release/src/observer/seekdb \
+               --obclient deps/3rd/u01/obclient/bin/obclient \
+               --base-dir "$GITHUB_WORKSPACE/bench_out/instance"; then
+            ok=1
+            break
+          fi
+          echo "=== bootstrap attempt ${attempt} failed ==="
+          python3 .github/script/seekdb/sdb.py stop \
+            --base-dir "$GITHUB_WORKSPACE/bench_out/instance" >/dev/null 2>&1 || true
+        done
+        if [ "$ok" != "1" ]; then
+          echo "bootstrap failed on all attempts"
+          exit 1
+        fi
 
     - name: Run fts benchmark
       shell: bash
