@@ -1357,6 +1357,7 @@ DEF_TO_STRING(ObCreateIndexArg)
        K_(is_rebuild_index),
        K_(is_index_scope_specified),
        K_(is_offline_rebuild),
+       K_(is_default_parallel),
        K_(index_key),
        K_(data_version));
   J_OBJ_END();
@@ -1383,7 +1384,8 @@ OB_SERIALIZE_MEMBER((ObCreateIndexArg, ObIndexArg),
                     is_index_scope_specified_,
                     is_offline_rebuild_,
                     index_key_,
-                    data_version_);
+                    data_version_,
+                    is_default_parallel_);
 
 
 

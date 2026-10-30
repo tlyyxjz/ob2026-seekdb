@@ -159,6 +159,12 @@ public:
         const share::schema::ObIndexType index_type,
         const int64_t original_parallelism,
         int64_t &decided_parallelism);
+  // The default parallel degree of the fulltext data complement when the ddl statement does
+  // not ask for one: min(2, max(1, effective_cpu_count / 2)).  The inverted index and the doc
+  // word index are the two data complement sub-tasks of a fulltext index build and run
+  // concurrently, so 2 lets the consumer side of one of them overlap the producer of the
+  // other without oversubscribing the px pool of a small box.
+  static int64_t get_default_auto_parallelism();
 private:
   static int build_fts_aux_index_name(
     const ObIndexType type,

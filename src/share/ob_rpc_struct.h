@@ -1603,6 +1603,7 @@ public:
         is_rebuild_index_(false),
         is_index_scope_specified_(false),
         is_offline_rebuild_(false),
+        is_default_parallel_(false),
         index_key_(-1),
         data_version_(0)
   {
@@ -1633,6 +1634,7 @@ public:
     is_rebuild_index_ = false;
     is_index_scope_specified_ = false;
     is_offline_rebuild_ = false;
+    is_default_parallel_ = false;
     index_key_ = -1;
     data_version_ = 0;
   }
@@ -1660,6 +1662,7 @@ public:
       is_rebuild_index_ = other.is_rebuild_index_;
       is_index_scope_specified_ = other.is_index_scope_specified_;
       is_offline_rebuild_ = other.is_offline_rebuild_;
+      is_default_parallel_ = other.is_default_parallel_;
       index_key_ = other.index_key_;
       data_version_ = other.data_version_;
     }
@@ -1695,6 +1698,13 @@ public:
   bool is_rebuild_index_;
   bool is_index_scope_specified_;
   bool is_offline_rebuild_;
+  // True when the ddl statement carries no explicit parallel degree and no other session or
+  // table setting made it parallel, i.e. the ddl parallelism is the implicit default one. It
+  // allows the fulltext index build to pick the default automatic degree for its inverted
+  // index and doc word index aux tables. It never changes the parallelism of an explicit
+  // parallel(N) hint, of _force_parallel_ddl_dop, of a parallel table, or of a non fulltext
+  // index build.
+  bool is_default_parallel_;
   int64_t index_key_;
   uint64_t data_version_;
 };

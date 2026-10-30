@@ -7773,9 +7773,13 @@ int ObDDLResolver::set_partition_name_in_hashset(const ObPartitionNameHashWrappe
   return ret;
 }
 
-int ObDDLResolver::calc_ddl_parallelism(const uint64_t hint_parallelism, const uint64_t table_dop, uint64_t &parallelism)
+int ObDDLResolver::calc_ddl_parallelism(const uint64_t hint_parallelism,
+                                        const uint64_t table_dop,
+                                        uint64_t &parallelism,
+                                        bool &is_default_parallel)
 {
   int ret = OB_SUCCESS;
+  is_default_parallel = false;
   if (hint_parallelism > 1) {
     parallelism = hint_parallelism;
   } else {
@@ -7789,13 +7793,18 @@ int ObDDLResolver::calc_ddl_parallelism(const uint64_t hint_parallelism, const u
         if (OB_FAIL(session_info_->get_enable_parallel_ddl(enable_parallel_ddl))) {
         } else if (enable_parallel_ddl) {
           parallelism = table_dop;
+          // Nothing made this ddl parallel: no parallel(N) hint (checked by the caller),
+          // _force_parallel_ddl_dop is not set and the table is not parallel either, so the
+          // parallelism is the implicit default degree. It is the only case where the
+          // fulltext data complement may choose the default automatic degree itself.
+          is_default_parallel = (1 == table_dop);
         } else {
           parallelism = 1;
         }
       }
     }
   }
-  LOG_INFO("calc ddl parallelism", K(parallelism));
+  LOG_INFO("calc ddl parallelism", K(parallelism), K(is_default_parallel));
   return ret;
 }
 
@@ -7828,9 +7837,66 @@ int ObDDLResolver::resolve_hints(const ParseNode *node, ObDDLStmt &stmt, const O
   }
   if (OB_SUCC(ret)) {
     const int64_t table_dop = stmt::T_CREATE_INDEX == stmt.get_cmd_type() ? static_cast<ObCreateIndexStmt &>(stmt).get_index_dop() : table_schema.get_dop();
-    if (OB_FAIL(calc_ddl_parallelism(hint_parallel, table_dop, parallelism))) {
+    bool is_default_parallel = false;
+    if (OB_FAIL(calc_ddl_parallelism(hint_parallel, table_dop, parallelism, is_default_parallel))) {
     } else {
       stmt.set_parallelism(parallelism);
+      // "No explicit parallel setting" needs both: this statement has no parallel(N) hint and
+      // the implicit ddl degree above (not forced _force_parallel_ddl_dop, no parallel table,
+      // _enable_parallel_ddl on). The flag is carried on the ObCreateIndexArg to the rootserver
+      // so that the fulltext build can pick the default automatic degree for its data
+      // complement. An explicit parallel hint, a forced ddl dop, a parallel table, a disabled
+      // _enable_parallel_ddl or a non fulltext index are never marked.
+      if (is_default_parallel && !stmt.get_has_parallel_hint()
+          && OB_FAIL(mark_fts_default_parallel(stmt))) {
+      }
+    }
+  }
+  return ret;
+}
+
+int ObDDLResolver::mark_fts_default_parallel(ObDDLStmt &stmt)
+{
+  int ret = OB_SUCCESS;
+  // Mark the fulltext index args of the statement as using the implicit default ddl degree,
+  // so the fulltext index build may use the default automatic degree for the inverted index
+  // and the doc word index. The rowkey-doc/doc-rowkey aux tables are not affected (see
+  // ObFtsIndexBuildTask). Other index types are left untouched.
+  switch (stmt.get_cmd_type()) {
+    case stmt::T_CREATE_INDEX: {
+      obcall::ObCreateIndexArg &index_arg =
+          static_cast<ObCreateIndexStmt &>(stmt).get_create_index_arg();
+      if (share::schema::is_fts_index(index_arg.index_type_)) {
+        index_arg.is_default_parallel_ = true;
+      }
+      break;
+    }
+    case stmt::T_ALTER_TABLE: {
+      common::ObSArray<obcall::ObCreateIndexArg *> &index_arg_list =
+          static_cast<ObAlterTableStmt &>(stmt).get_index_arg_list();
+      for (int64_t i = 0; OB_SUCC(ret) && i < index_arg_list.count(); ++i) {
+        obcall::ObCreateIndexArg *index_arg = index_arg_list.at(i);
+        if (OB_ISNULL(index_arg)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (share::schema::is_fts_index(index_arg->index_type_)) {
+          index_arg->is_default_parallel_ = true;
+        }
+      }
+      break;
+    }
+    case stmt::T_CREATE_TABLE: {
+      common::ObSArray<obcall::ObCreateIndexArg> &index_arg_list =
+          static_cast<ObCreateTableStmt &>(stmt).get_index_arg_list();
+      for (int64_t i = 0; OB_SUCC(ret) && i < index_arg_list.count(); ++i) {
+        obcall::ObCreateIndexArg &index_arg = index_arg_list.at(i);
+        if (share::schema::is_fts_index(index_arg.index_type_)) {
+          index_arg.is_default_parallel_ = true;
+        }
+      }
+      break;
+    }
+    default: {
+      break;
     }
   }
   return ret;

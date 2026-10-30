@@ -697,6 +697,7 @@ int ObFtsIndexBuildTask::construct_domain_index_aux_arg(obcall::ObCreateIndexArg
   if (OB_FAIL(deep_copy_index_arg(allocator_, create_index_arg_, arg))) {
   } else if (is_fts_task()) {
     if (OB_FAIL(ObFtsIndexBuilderUtil::generate_fts_aux_index_name(arg, &allocator_))) {
+    } else if (OB_FAIL(set_default_parallel_for_fts_aux(arg))) {
     }
   }
   return ret;
@@ -709,6 +710,26 @@ int ObFtsIndexBuildTask::construct_fts_doc_word_arg(obcall::ObCreateIndexArg &ar
   } else if (FALSE_IT(arg.index_type_ = INDEX_TYPE_FTS_DOC_WORD_LOCAL)) {
   } else if (OB_FAIL(ObFtsIndexBuilderUtil::generate_fts_aux_index_name(arg,
                                                                         &allocator_))) {
+  } else if (OB_FAIL(set_default_parallel_for_fts_aux(arg))) {
+  }
+  return ret;
+}
+
+int ObFtsIndexBuildTask::set_default_parallel_for_fts_aux(obcall::ObCreateIndexArg &arg)
+{
+  int ret = OB_SUCCESS;
+  // The inverted index (domain index aux) and the doc word index are the two data complement
+  // sub-tasks of a fulltext index build. They are submitted back to back and then run
+  // concurrently, so the classic ddl parallelism, which is divided by three before it reaches
+  // the aux tables and keeps them serial, is not useful for them. When the user did not ask
+  // for any parallel degree at all (create_index_arg_.is_default_parallel_), let each of them
+  // use the default automatic degree, so that the consumer side of one of them overlaps the
+  // producer of the other without oversubscribing the px pool of a small box.
+  // The rowkey-doc/doc-rowkey aux tables and non fulltext indexes are never changed here.
+  if (is_fts_task() && create_index_arg_.is_default_parallel_) {
+    arg.parallelism_ = ObFtsIndexBuilderUtil::get_default_auto_parallelism();
+    LOG_INFO("set default parallel degree for fulltext aux table build",
+             K(arg.index_type_), K(arg.parallelism_), K(create_index_arg_.parallelism_));
   }
   return ret;
 }

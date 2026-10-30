@@ -2980,7 +2980,11 @@ int ObTableScanOp::inner_get_next_row()
       if (ret != OB_ITER_END) {
       }
     }
-  } else if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_ && nullptr == tsc_rtdef_.scan_rtdef_.sample_info_)) {
+  } else if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_)) {
+    // The sampled scan of a fulltext ddl must produce rows of the same shape as the real scan,
+    // that is, a sampled document has to be expanded into one row per word as well. Otherwise
+    // the sampled word and doc id of a document are not comparable with the keys of the real
+    // index rows, and the range cuts computed from them put all the rows into one slice.
     if (OB_FAIL(inner_get_next_fts_index_row())) {
       if (OB_ITER_END != ret) {
       }

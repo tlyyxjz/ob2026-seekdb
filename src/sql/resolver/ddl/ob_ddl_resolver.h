@@ -488,7 +488,11 @@ protected:
       common::ObString &func_str,
       common::ObSqlString &part_str);
   int resolve_hints(const ParseNode *parse_node, ObDDLStmt &stmt, const ObTableSchema &table_schema);
-  int calc_ddl_parallelism(const uint64_t hint_parallelism, const uint64_t table_dop, uint64_t &parallelism);
+  int calc_ddl_parallelism(const uint64_t hint_parallelism,
+                           const uint64_t table_dop,
+                           uint64_t &parallelism,
+                           bool &is_default_parallel);
+  int mark_fts_default_parallel(ObDDLStmt &stmt);
   int deep_copy_str(const common::ObString &src, common::ObString &dest);
   int set_vec_column_name(
       const common::ObString &column_name);

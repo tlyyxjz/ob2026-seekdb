@@ -25,6 +25,7 @@
 #include "data_plane/fts/ob_fts_parser_helper.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "share/schema/ob_schema_utils.h"
+#include "lib/cpu/ob_cpu_topology.h"
 
 namespace oceanbase
 {
@@ -1047,7 +1048,10 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
       case share::schema::ObIndexType::INDEX_TYPE_DOC_ID_ROWKEY_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_FTS_INDEX_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_FTS_DOC_WORD_LOCAL:
-        decided_parallelism = MAX(original_parallelism / 3, 1L);
+        // The sample scan of a fulltext ddl now produces the same row shape as the real scan,
+        // so the range cuts computed from it really split the work across slices. Dividing the
+        // degree here kept the aux tables serial and left those slices idle.
+        decided_parallelism = MAX(original_parallelism, 1L);
         break;
       case share::schema::ObIndexType::INDEX_TYPE_NORMAL_MULTIVALUE_LOCAL:
       case share::schema::ObIndexType::INDEX_TYPE_UNIQUE_MULTIVALUE_LOCAL:
@@ -1062,6 +1066,14 @@ int ObFtsIndexBuilderUtil::decide_parallelism(
     }
   }
   return ret;
+}
+
+int64_t ObFtsIndexBuilderUtil::get_default_auto_parallelism()
+{
+  // The effective cpu count of the instance: the cpu_count parameter when it is configured,
+  // otherwise the number of online cpus.
+  const int64_t cpu_count = common::get_cpu_count();
+  return MIN(static_cast<int64_t>(2), MAX(static_cast<int64_t>(1), cpu_count / 2));
 }
 
 int ObFtsIndexBuilderUtil::generate_word_segment_column(
