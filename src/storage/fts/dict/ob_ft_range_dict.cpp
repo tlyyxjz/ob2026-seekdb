@@ -44,6 +44,19 @@ namespace oceanbase
 namespace storage
 {
 
+namespace
+{
+// The utf8mb4_bin collation compares the raw bytes of the two words, see
+// ob_strnncoll_mb_bin. Comparing the bytes directly keeps the dictionary
+// lookup hot path free of the collation dispatch.
+inline int compare_bin_word(const ObString &left, const ObString &right)
+{
+  const int64_t len = MIN(left.length(), right.length());
+  const int cmp = len > 0 ? MEMCMP(left.ptr(), right.ptr(), len) : 0;
+  return cmp != 0 ? cmp : static_cast<int>(left.length() - right.length());
+}
+} // namespace
+
 
 int ObFTRangeDict::build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container)
 {
@@ -405,13 +418,26 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 {
   int ret = OB_SUCCESS;
   bool found = false;
-  const int64_t range_cnt = range_dicts_.size();
-  for (int64_t i = 0; !found && i < range_cnt; ++i) {
-    if (fast_utf8mb4_bin_strcmp(range_dicts_[i].end_.get_word(), single_word) >= 0
-        && fast_utf8mb4_bin_strcmp(range_dicts_[i].start_.get_word(), single_word) <= 0) {
-      dict = range_dicts_[i].dict_;
-      found = true;
+  // The ranges are built from consecutive chunks of the sorted dictionary, so
+  // they are sorted and do not overlap. The range holding the word is the last
+  // one whose start word is not greater than the word, it is found with a
+  // binary search to avoid most of the comparisons.
+  int64_t lo = 0;
+  int64_t hi = range_dicts_.size() - 1;
+  int64_t candidate = -1;
+  while (lo <= hi) {
+    const int64_t mid = lo + (hi - lo) / 2;
+    if (fast_utf8mb4_bin_strcmp(range_dicts_[mid].start_.get_word(), single_word) <= 0) {
+      candidate = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
     }
+  }
+  if (candidate >= 0
+      && fast_utf8mb4_bin_strcmp(range_dicts_[candidate].end_.get_word(), single_word) >= 0) {
+    dict = range_dicts_[candidate].dict_;
+    found = true;
   }
   if (!found) {
     // not found, dis match

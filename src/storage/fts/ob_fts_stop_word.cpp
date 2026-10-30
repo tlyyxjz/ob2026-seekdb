@@ -79,28 +79,30 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    const common::ObString src_str = word.get_word().get_string();
-    // All built-in stopwords in ob_stop_word_list are pure ASCII with length <= 5
-    if (src_str.length() > 5 || static_cast<uint8_t>(src_str.ptr()[0]) >= 0x80) {
-      is_stopword = false;
-      return OB_SUCCESS;
-    }
-    if (word.get_collation_type() == stopword_type_.get_collation_type()) {
-      ObFTWord converted(src_str.length(), src_str.ptr(), stopword_type_);
-      ret = stopword_set_.exist_refactored(converted);
+    common::ObString cmp_str;
+    // do nothing set out with in if type is the same.
+    const common::ObCollationType src_coll = word.get_collation_type();
+    const common::ObCollationType dst_coll = stopword_type_.get_collation_type();
+    if (common::ObCharset::is_valid_collation(src_coll)
+        && common::ObCharset::is_valid_collation(dst_coll)
+        && common::ObCharset::charset_type_by_coll(src_coll)
+               == common::ObCharset::charset_type_by_coll(dst_coll)) {
+      // the charsets are the same, the word can be looked up directly, no
+      // conversion and no temporary allocator is needed.
+      cmp_str = word.get_word().get_string();
     } else {
       common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
-      common::ObString cmp_str;
       if (OB_FAIL(common::ObCharset::charset_convert(
-                                         allocator,
-                                         src_str,
-                                         word.get_collation_type(),
-                                         stopword_type_.get_collation_type(),
-                                         cmp_str))) {
-      } else {
-        ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
-        ret = stopword_set_.exist_refactored(converted);
+                     allocator,
+                     word.get_word().get_string(),
+                     src_coll,
+                     dst_coll,
+                     cmp_str))) {
       }
+    }
+    if (OB_SUCC(ret)) {
+      ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
+      ret = stopword_set_.exist_refactored(converted);
     }
     if (OB_HASH_NOT_EXIST == ret) {
       is_stopword = false;
@@ -124,6 +126,7 @@ ObAddWord::ObAddWord(
     common::ObIAllocator &allocator,
     ObFTWordMap &word_map)
   : word_meta_(meta),
+    map_word_meta_(meta),
     allocator_(allocator),
     word_map_(word_map),
     min_max_word_cnt_(0),
@@ -133,6 +136,15 @@ ObAddWord::ObAddWord(
     max_token_size_(property.max_token_size_),
     flag_(flag)
 {
+  // 解析器已经做过 casedown 时，词元之间的大小写差异已经被消除，
+  // 再用大小写不敏感的排序规则去哈希和比较只会多走一遍逐字符的多字节转换。
+  // 这种情况下下降到二进制比较：折叠之后的词元在两种比较下等价，
+  // 但二进制比较不需要逐字符转换，是分词热路径上的一处明显开销。
+  if (flag_.casedown()
+      && CHARSET_UTF8MB4 == meta.get_charset_type()
+      && CS_TYPE_UTF8MB4_BIN != meta.get_collation_type()) {
+    map_word_meta_.set_collation_type(CS_TYPE_UTF8MB4_BIN);
+  }
 }
 
 int ObAddWord::process_word(
@@ -235,14 +247,23 @@ int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (!flag_.groupby_word()) {
-    if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
-    }
   } else {
-    int64_t *cnt_ptr = const_cast<int64_t *>(word_map_.get(word));
-    if (nullptr != cnt_ptr) {
-      *cnt_ptr += word_freq;
-    } else if (OB_FAIL(word_map_.set_refactored(word, 1, 0/*overwrite*/))) {
+    // 词元入表时用 map_word_meta_（解析器做过 casedown 时是二进制排序规则），
+    // 让哈希与比较不再走逐字符的多字节转换。
+    const ObString word_str = word.get_word().get_string();
+    ObFTWord map_word(word_str.length(), word_str.ptr(), map_word_meta_);
+    if (!flag_.groupby_word()) {
+      if (OB_FAIL(word_map_.set_refactored(map_word, 1/*word count*/))) {
+      }
+    } else if (OB_FAIL(word_map_.get_refactored(map_word, word_count)) && OB_HASH_NOT_EXIST != ret) {
+    } else {
+      if (OB_HASH_NOT_EXIST == ret) {
+        word_count = 1;
+      } else {
+        word_count += word_freq;
+      }
+      if (OB_FAIL(word_map_.set_refactored(map_word, word_count, 1/*overwrite*/))) {
+      }
     }
   }
   return ret;
