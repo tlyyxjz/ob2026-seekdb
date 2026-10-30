@@ -32,10 +32,21 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
+  /* CAGRA build cost is dominated by NN-Descent: per-iteration work scales
+   * with intermediate_graph_degree, total work with nn_descent_niter.  The V5
+   * contest baseline pins 256/100 - 2x/5x the cuVS defaults (128/20) - for a
+   * 250K-row build, and still reports recall ~1.000 on SIFT250K, i.e. the
+   * refinement budget is saturated well before it runs out.
+   *
+   * Reclaim that budget without touching graph_degree (the knob that governs
+   * steady-state recall and stays at the baseline 128): halve the
+   * intermediate degree, and scale the refinement rounds with dimensionality,
+   * since NN-Descent convergence slows as dimensions grow - a 128-d graph
+   * saturates far earlier than a 256-d one. */
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  h->ip->intermediate_graph_degree = 128;
+  h->ip->nn_descent_niter = (dim >= 192) ? 80 : 32;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
