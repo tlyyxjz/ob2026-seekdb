@@ -19,6 +19,7 @@
 #include "query/engine/expr/ob_expr_bm25.h"
 #include "query/engine/expr/ob_expr_util.h"
 #include "query/das/ob_das_iter_access.h"
+#include "lib/time/ob_clock_generator.h"
 #include "share/rc/ob_server_runtime.h"
 #include "ob_block_stat_iter.h"
 #include "ob_inv_idx_param_estimator.h"
@@ -206,6 +207,9 @@ int ObBM25ParamEstimator::init(const ObBM25ParamEstCtx &est_ctx)
 int ObBM25ParamEstimator::do_estimation(sql::ObEvalCtx &eval_ctx)
 {
   int ret = OB_SUCCESS;
+  const int64_t probe_begin_us = ObClockGenerator::getClock();
+  const int64_t probe_plan_est = est_ctx_.estimated_total_doc_cnt_;
+  bool probe_scanned = false;
   sql::ObEvalCtx::BatchInfoScopeGuard guard(eval_ctx);
   guard.set_batch_idx(0);
   if (IS_NOT_INIT) {
@@ -213,6 +217,7 @@ int ObBM25ParamEstimator::do_estimation(sql::ObEvalCtx &eval_ctx)
   } else if (!estimated_) {
     // skip repeated estimation
     if (est_ctx_.estimated_total_doc_cnt_ <= 0) {
+      probe_scanned = true;
       if (OB_ISNULL(est_ctx_.total_doc_cnt_iter_)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (OB_FAIL(query::das_scan_next_row(est_ctx_.total_doc_cnt_iter_))) {
@@ -249,6 +254,9 @@ int ObBM25ParamEstimator::do_estimation(sql::ObEvalCtx &eval_ctx)
       estimated_ = true;
     }
   }
+  LOG_WARN("BM25_ESTIMATION_PROBE", K(probe_plan_est), K(probe_scanned),
+           "elapsed_us", ObClockGenerator::getClock() - probe_begin_us,
+           K(total_doc_cnt_), K(avg_doc_token_cnt_), K(ret));
   return ret;
 }
 

@@ -112,6 +112,21 @@ jobs:
         "$CLIENT" -h127.0.0.1 -P2881 -uroot -e "SHOW VARIABLES LIKE '%parallel%'" 2>&1 | head -20
         echo "nproc=$(nproc)"
 
+    - name: Estimation probe summary
+      if: always()
+      shell: bash
+      run: |
+        LOGDIR="$GITHUB_WORKSPACE/bench_out/instance/log"
+        echo "=== raw samples ==="
+        grep -h "BM25_ESTIMATION_PROBE" "$LOGDIR"/*.log 2>/dev/null | tail -4 | cut -c1-280 || true
+        echo "=== counts ==="
+        echo "calls=$(grep -h -c 'BM25_ESTIMATION_PROBE' "$LOGDIR"/*.log 2>/dev/null | awk '{s+=$1} END {print s+0}')"
+        echo "scanned=$(grep -h 'BM25_ESTIMATION_PROBE' "$LOGDIR"/*.log 2>/dev/null | grep -c 'probe_scanned=true' || true)"
+        echo "--- plan_est distribution ---"
+        grep -h -o "probe_plan_est=[0-9-]*" "$LOGDIR"/*.log 2>/dev/null | sort | uniq -c | head -6 || true
+        echo "--- elapsed_us total / max ---"
+        grep -h -o "elapsed_us=[0-9]*" "$LOGDIR"/*.log 2>/dev/null | cut -d= -f2 | awk '{s+=$1; if($1>m)m=$1; n++} END {print "n=" n " sum_us=" s " avg_us=" (n?s/n:0) " max_us=" m}'
+
     - name: Dump observer diagnostics
       if: failure()
       shell: bash
