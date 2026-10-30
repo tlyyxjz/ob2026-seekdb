@@ -1,0 +1,128 @@
+# owner: bro789
+# owner group: storage
+# description: results of the optimized fulltext paths: score-free MATCH filters (union of the
+#              posting lists, uint64 and binary document ids, index back, limit), count-only
+#              views, vectorized index build and tokenizer fast paths. The results are recorded
+#              with the original implementation and are cross-checked with LIKE where possible.
+
+--disable_warnings
+drop database if exists fts_perf;
+create database fts_perf;
+use fts_perf;
+set ob_query_timeout = 10000000000;
+set ob_trx_timeout = 10000000000;
+--enable_warnings
+
+--result_format 4
+
+# ---------------------------------------------------------------------------------------------
+# data: a table with primary key (binary document id) and a heap table (hidden pk as document id)
+create table t_pk(id bigint primary key, c1 varchar(256), c2 text);
+create table t_heap(id bigint, c1 varchar(256), c2 text);
+
+set cte_max_recursion_depth = 10000;
+set group_concat_max_len = 1000000;
+insert into t_pk
+  with recursive s(n) as (select 1 union all select n + 1 from s where n < 700)
+  select n,
+         case n % 3 when 0 then concat('Apple banana ORANGE ', n)
+                    when 1 then concat('全文索引 分词器 测试 ', n)
+                    else concat('Mixed 数据库 Database Ünïcode Straße ', n) end,
+         concat('row ', n, ' fox', n % 5, ' jumps dog', n % 7, ' 数据库', n % 5, ' 性能',
+                if(n % 7 = 0, ' cherry kiwi lemon mango melon peach pear plum lime grape fig date', ''))
+  from s;
+insert into t_heap select * from t_pk;
+
+# a document with more distinct words than one vectorized batch of the index build
+insert into t_pk
+  with recursive s(n) as (select 1 union all select n + 1 from s where n < 600)
+  select 1001, 'long', group_concat(concat('w', 1000 + n) separator ' ') from s;
+insert into t_heap select * from t_pk where id = 1001;
+insert into t_pk values (1002, '', ''), (1003, null, null);
+insert into t_heap values (1002, '', ''), (1003, null, null);
+
+# build after loading, both through the fulltext index build
+alter table t_pk add fulltext index ft_pk_beng(c1, c2) with parser beng;
+alter table t_heap add fulltext index ft_heap_beng(c1, c2) with parser beng;
+alter table t_pk add fulltext index ft_pk_ik(c2) with parser ik;
+
+# ---------------------------------------------------------------------------------------------
+# score-free filters: single token, several tokens (union), missing token, repeated token
+select count(*) from t_pk where match(c1, c2) against('fox1');
+select count(*) from t_pk where c1 like '%fox1%' or c2 like '%fox1 %';
+select count(*) from t_heap where match(c1, c2) against('fox1');
+select count(*) from t_pk where match(c1, c2) against('fox1 dog3');
+select count(*) from t_pk where c2 like '%fox1 %' or c2 like '%dog3 %';
+select count(*) from t_heap where match(c1, c2) against('fox1 dog3');
+select count(*) from t_pk where match(c1, c2) against('cherry fox4 apple nothinghere');
+select count(*) from t_heap where match(c1, c2) against('cherry fox4 apple nothinghere');
+select count(*) from t_pk where match(c1, c2) against('nothinghere');
+select count(*) from t_pk where match(c1, c2) against('dog2 dog2 dog2');
+select count(*) from t_pk where match(c1, c2) against('w1100 w1599');
+select count(*) from t_pk where match(c1, c2) against('fox1') > 0;
+select count(*) from t_pk where 0 < match(c1, c2) against('fox1');
+select count(*) from t_pk where match(c2) against('数据库 性能');
+select count(*) from t_pk where match(c2) against('数据库');
+
+# the same documents as with scoring (the score is projected, so it is calculated)
+select count(*) from (select id, match(c1, c2) against('fox1 dog3') as s from t_pk where match(c1, c2) against('fox1 dog3')) v where s > 0;
+
+# index back, order, limit and offset of score-free retrieval
+select id from t_pk where match(c1, c2) against('fox2 dog5') order by id limit 10;
+select id from t_heap where match(c1, c2) against('fox2 dog5') order by id limit 10;
+select count(id), sum(id), max(c1) from t_pk where match(c1, c2) against('fox2 dog5');
+select count(id), sum(id), max(c1) from t_heap where match(c1, c2) against('fox2 dog5');
+select id, c1 from t_pk where match(c1, c2) against('cherry') and id > 600 order by id;
+select id from t_pk where match(c1, c2) against('apple') order by id desc limit 3 offset 2;
+select count(*) from t_pk where match(c1, c2) against('apple') and match(c2) against('性能');
+
+# count-only views keep their row count
+select count(*) from (select id from t_pk where match(c1, c2) against('fox1 dog3') limit 20) v;
+select count(*) from (select id from t_pk where match(c1, c2) against('fox1 dog3') limit 5, 1000) v;
+select count(*) from (select id from t_heap where match(c1, c2) against('nothinghere') limit 20) v;
+select count(*) from (select id, c1 from t_pk where match(c1, c2) against('lime') limit 1000) v;
+select count(*) from (select distinct c1 from t_pk where match(c1, c2) against('apple') limit 1000) v;
+select count(*), max(t.id) from (select id from t_pk where match(c1, c2) against('apple') limit 7) t;
+
+# dml after the build: the union also merges posting lists of the memtable
+insert into t_pk values (2001, 'fresh fox1', 'brand new dog3');
+update t_pk set c2 = 'nothing left' where id = 3;
+delete from t_pk where id = 6;
+insert into t_heap values (2001, 'fresh fox1', 'brand new dog3');
+update t_heap set c2 = 'nothing left' where id = 3;
+delete from t_heap where id = 6;
+select count(*) from t_pk where match(c1, c2) against('fox1 dog3');
+select count(*) from t_heap where match(c1, c2) against('fox1 dog3');
+select id from t_pk where match(c1, c2) against('fresh') order by id;
+select count(*) from t_pk where match(c1, c2) against('left');
+
+# ---------------------------------------------------------------------------------------------
+# tokenizer: casedown fast and generic paths, default parser properties, repeated calls
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'ik');
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'ik');
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'beng');
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'space');
+select tokenize('中华人民共和国人民大会堂 一百二十三个 3.14 abc-def', 'ik', '[{"additional_args":[{"ik_mode": "max_word"}]}]');
+select tokenize('中华人民共和国人民大会堂 一百二十三个 3.14 abc-def', 'ik');
+select tokenize('The quick brown fox jumps over the lazy dog', 'beng', '[{"output": "all"}]');
+
+# ---------------------------------------------------------------------------------------------
+# words equal under the collation but not in bytes, and words whose collation order differs from
+# their byte order: the index build sorts them on encoded sort keys
+create table t_coll(id int primary key, c varchar(200));
+insert into t_coll values (1, 'Résumé resume RESUME'), (2, 'resume'), (3, 'éclair eclair'),
+  (4, 'Ångström angstrom'), (5, 'a_b a-b A_B ab'), (6, 'zeta Zeta ZETA'), (7, '中文 中文字符'),
+  (8, 'straße strasse'), (9, 'ｆｕｌｌｗｉｄｔｈ fullwidth'), (10, 'naïve naive'), (11, 'Ü u ü');
+alter table t_coll add fulltext index ft_coll(c) with parser beng;
+alter table t_coll add fulltext index ft_coll_ik(c) with parser ik;
+select id from t_coll where match(c) against('resume') order by id;
+select id from t_coll where match(c) against('résumé') order by id;
+select id from t_coll where match(c) against('eclair') order by id;
+select id from t_coll where match(c) against('angstrom') order by id;
+select id from t_coll where match(c) against('a_b ab') order by id;
+select id from t_coll where match(c) against('zeta naive strasse fullwidth') order by id;
+select id from t_coll where match(c) against('ü') order by id;
+select count(*) from t_coll where match(c) against('中文');
+select tokenize(c, 'beng') from t_coll order by id;
+
+drop database fts_perf;

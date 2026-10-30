@@ -656,18 +656,62 @@ int ObExprTokenize::parse_parser_properties(const ObExpr &expr,
   return ret;
 }
 
+namespace
+{
+// The formatted properties of a parser without user-given properties only depend on the parser
+// name, keep the last ones of each thread instead of rebuilding the json for every call.
+class ObTokenizeDefaultPropsCache final
+{
+public:
+  ObTokenizeDefaultPropsCache() : name_len_(0), props_len_(0), valid_(false) {}
+  bool get(const ObString &parser_name, ObIAllocator &allocator, ObString &props) const
+  {
+    bool found = false;
+    if (valid_ && parser_name.length() == name_len_
+        && 0 == MEMCMP(parser_name.ptr(), name_, name_len_)) {
+      found = OB_SUCCESS == ob_write_string(allocator, ObString(props_len_, props_), props);
+    }
+    return found;
+  }
+  void put(const ObString &parser_name, const ObString &props)
+  {
+    if (parser_name.length() <= MAX_NAME_LEN && props.length() <= MAX_PROPS_LEN) {
+      MEMCPY(name_, parser_name.ptr(), parser_name.length());
+      MEMCPY(props_, props.ptr(), props.length());
+      name_len_ = parser_name.length();
+      props_len_ = props.length();
+      valid_ = true;
+    }
+  }
+private:
+  static const int64_t MAX_NAME_LEN = storage::OB_FT_PARSER_NAME_LENGTH;
+  static const int64_t MAX_PROPS_LEN = 1024;
+  char name_[MAX_NAME_LEN];
+  char props_[MAX_PROPS_LEN];
+  int32_t name_len_;
+  int32_t props_len_;
+  bool valid_;
+};
+} // namespace
+
 int ObExprTokenize::TokenizeParam::reform_parser_properties(const ObString &properties)
 {
   int ret = OB_SUCCESS;
   storage::ObFTParserJsonProps parser_properties;
+  static thread_local ObTokenizeDefaultPropsCache default_props_cache;
+  const bool use_default = properties.empty();
 
-  if (OB_FAIL(parser_properties.init())) {
+  if (use_default && default_props_cache.get(parser_name_, allocator_, properties_)) {
+    // the same as the rebuild below
+  } else if (OB_FAIL(parser_properties.init())) {
   } else if (OB_FAIL(parser_properties.parse_from_valid_str(properties))) {
     LOG_USER_ERROR(OB_INVALID_ARGUMENT, "parser properties invalid.");
   } else if (OB_FAIL(parser_properties.rebuild_props_for_ddl(parser_name_,
                                                              ObCollationType::CS_TYPE_UTF8MB4_BIN,
                                                              true))) {
   } else if (OB_FAIL(parser_properties.to_format_json(allocator_, properties_))) {
+  } else if (use_default) {
+    default_props_cache.put(parser_name_, properties_);
   }
 
   return ret;

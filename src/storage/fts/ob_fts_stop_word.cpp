@@ -158,11 +158,43 @@ bool ObAddWord::is_min_max_word(const int64_t c_len) const
   return flag_.min_max_word() && (c_len < min_token_size_ || c_len > max_token_size_);
 }
 
+// Lower-cases utf8mb4 words made of ASCII and U+4000..U+9FFF (CJK, no case mapping) only,
+// the bulk of mixed Chinese/English text, without the generic per-character case table.
+static bool casedown_utf8mb4_fast(const ObString &src, char *dst)
+{
+  bool done = true;
+  const unsigned char *p = reinterpret_cast<const unsigned char *>(src.ptr());
+  const int64_t len = src.length();
+  for (int64_t i = 0; done && i < len; ) {
+    const unsigned char c = p[i];
+    if (c < 0x80) {
+      dst[i] = (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : static_cast<char>(c);
+      i += 1;
+    } else if (c >= 0xE4 && c <= 0xE9 && i + 2 < len
+               && (p[i + 1] & 0xC0) == 0x80 && (p[i + 2] & 0xC0) == 0x80) {
+      dst[i] = static_cast<char>(c);
+      dst[i + 1] = static_cast<char>(p[i + 1]);
+      dst[i + 2] = static_cast<char>(p[i + 2]);
+      i += 3;
+    } else {
+      done = false;
+    }
+  }
+  return done;
+}
+
 int ObAddWord::casedown_word(const ObFTWord &src, ObFTWord &dst)
 {
   int ret = OB_SUCCESS;
+  char *buf = nullptr;
   if (OB_UNLIKELY(src.empty())) {
     ret = OB_INVALID_ARGUMENT;
+  } else if (flag_.casedown()
+             && CHARSET_UTF8MB4 == ObCharset::charset_type_by_coll(word_meta_.get_collation_type())
+             && OB_NOT_NULL(buf = static_cast<char *>(allocator_.alloc(src.get_word().len_)))
+             && casedown_utf8mb4_fast(src.get_word().get_string(), buf)) {
+    ObFTWord tmp(src.get_word().len_, buf, word_meta_);
+    dst = tmp;
   } else if (flag_.casedown()) {
     ObString dst_str;
     if (OB_FAIL(ObCharset::tolower(

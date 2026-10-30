@@ -44,6 +44,18 @@ namespace oceanbase
 namespace storage
 {
 
+// utf8mb4_bin order of the dictionary ranges, i.e. plain byte order
+static OB_INLINE int ft_range_bin_cmp(const ObString &l, const ObString &r)
+{
+  const int32_t min_len = MIN(l.length(), r.length());
+  int cmp = 0 == min_len ? 0 : MEMCMP(l.ptr(), r.ptr(), min_len);
+  if (0 == cmp) {
+    cmp = l.length() < r.length() ? -1 : (l.length() > r.length() ? 1 : 0);
+  }
+  return cmp;
+}
+
+
 
 int ObFTRangeDict::build_cache_from_ik_dict(const ObFTDictDesc &desc, ObFTCacheRangeContainer &range_container)
 {
@@ -307,6 +319,17 @@ int ObFTRangeDict::init()
     ret = OB_INIT_TWICE;
   } else {
     if (OB_FAIL(build_dict_from_cache(*range_container_))) {
+    } else {
+      // the binary search needs ascending, pairwise disjoint ranges, otherwise keep the scan
+      ranges_sorted_ = true;
+      for (int64_t i = 0; ranges_sorted_ && i < range_dicts_.size(); ++i) {
+        if (ft_range_bin_cmp(range_dicts_[i].start_.get_word(), range_dicts_[i].end_.get_word()) > 0) {
+          ranges_sorted_ = false;
+        } else if (i > 0 && ft_range_bin_cmp(range_dicts_[i - 1].end_.get_word(),
+                                             range_dicts_[i].start_.get_word()) >= 0) {
+          ranges_sorted_ = false;
+        }
+      }
     }
     is_inited_ = true;
   }
@@ -382,17 +405,36 @@ int ObFTRangeDict::find_first_char_range(const ObString &single_word, ObIFTDict 
 {
   int ret = OB_SUCCESS;
   bool found = false;
-  for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
-    if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                          range_dicts_[i].start_.get_word(),
-                          single_word)
-            <= 0
-        && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
-                             range_dicts_[i].end_.get_word(),
-                             single_word)
-               >= 0) {
-      dict = range_dicts_[i].dict_;
+  if (ranges_sorted_) {
+    // ranges are built from the sorted dictionary and do not overlap: the candidate is the last
+    // range starting at or before the word
+    int64_t lo = 0;
+    int64_t hi = range_dicts_.size();
+    while (lo < hi) {
+      const int64_t mid = lo + (hi - lo) / 2;
+      if (ft_range_bin_cmp(range_dicts_[mid].start_.get_word(), single_word) <= 0) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    if (lo > 0 && ft_range_bin_cmp(range_dicts_[lo - 1].end_.get_word(), single_word) >= 0) {
+      dict = range_dicts_[lo - 1].dict_;
       found = true;
+    }
+  } else {
+    for (int i = 0; OB_SUCC(ret) && !found && i < range_dicts_.size(); ++i) {
+      if (ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                            range_dicts_[i].start_.get_word(),
+                            single_word)
+              <= 0
+          && ObCharset::strcmp(ObCollationType::CS_TYPE_UTF8MB4_BIN,
+                               range_dicts_[i].end_.get_word(),
+                               single_word)
+                 >= 0) {
+        dict = range_dicts_[i].dict_;
+        found = true;
+      }
     }
   }
   if (!found) {

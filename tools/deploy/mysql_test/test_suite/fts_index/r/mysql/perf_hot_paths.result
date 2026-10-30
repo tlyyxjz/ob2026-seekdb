@@ -1,0 +1,396 @@
+drop database if exists fts_perf;
+create database fts_perf;
+use fts_perf;
+set ob_query_timeout = 10000000000;
+set ob_trx_timeout = 10000000000;
+result_format: 4
+create table t_pk(id bigint primary key, c1 varchar(256), c2 text);
+create table t_heap(id bigint, c1 varchar(256), c2 text);
+
+set cte_max_recursion_depth = 10000;
+set group_concat_max_len = 1000000;
+insert into t_pk
+  with recursive s(n) as (select 1 union all select n + 1 from s where n < 700)
+  select n,
+         case n % 3 when 0 then concat('Apple banana ORANGE ', n)
+                    when 1 then concat('全文索引 分词器 测试 ', n)
+                    else concat('Mixed 数据库 Database Ünïcode Straße ', n) end,
+         concat('row ', n, ' fox', n % 5, ' jumps dog', n % 7, ' 数据库', n % 5, ' 性能',
+                if(n % 7 = 0, ' cherry kiwi lemon mango melon peach pear plum lime grape fig date', ''))
+  from s;
+insert into t_heap select * from t_pk;
+
+insert into t_pk
+  with recursive s(n) as (select 1 union all select n + 1 from s where n < 600)
+  select 1001, 'long', group_concat(concat('w', 1000 + n) separator ' ') from s;
+insert into t_heap select * from t_pk where id = 1001;
+insert into t_pk values (1002, '', ''), (1003, null, null);
+insert into t_heap values (1002, '', ''), (1003, null, null);
+
+alter table t_pk add fulltext index ft_pk_beng(c1, c2) with parser beng;
+alter table t_heap add fulltext index ft_heap_beng(c1, c2) with parser beng;
+alter table t_pk add fulltext index ft_pk_ik(c2) with parser ik;
+
+select count(*) from t_pk where match(c1, c2) against('fox1');
++----------+
+| count(*) |
++----------+
+|      140 |
++----------+
+select count(*) from t_pk where c1 like '%fox1%' or c2 like '%fox1 %';
++----------+
+| count(*) |
++----------+
+|      140 |
++----------+
+select count(*) from t_heap where match(c1, c2) against('fox1');
++----------+
+| count(*) |
++----------+
+|      140 |
++----------+
+select count(*) from t_pk where match(c1, c2) against('fox1 dog3');
++----------+
+| count(*) |
++----------+
+|      220 |
++----------+
+select count(*) from t_pk where c2 like '%fox1 %' or c2 like '%dog3 %';
++----------+
+| count(*) |
++----------+
+|      220 |
++----------+
+select count(*) from t_heap where match(c1, c2) against('fox1 dog3');
++----------+
+| count(*) |
++----------+
+|      220 |
++----------+
+select count(*) from t_pk where match(c1, c2) against('cherry fox4 apple nothinghere');
++----------+
+| count(*) |
++----------+
+|      379 |
++----------+
+select count(*) from t_heap where match(c1, c2) against('cherry fox4 apple nothinghere');
++----------+
+| count(*) |
++----------+
+|      379 |
++----------+
+select count(*) from t_pk where match(c1, c2) against('nothinghere');
++----------+
+| count(*) |
++----------+
+|        0 |
++----------+
+select count(*) from t_pk where match(c1, c2) against('dog2 dog2 dog2');
++----------+
+| count(*) |
++----------+
+|      100 |
++----------+
+select count(*) from t_pk where match(c1, c2) against('w1100 w1599');
++----------+
+| count(*) |
++----------+
+|        1 |
++----------+
+select count(*) from t_pk where match(c1, c2) against('fox1') > 0;
++----------+
+| count(*) |
++----------+
+|      140 |
++----------+
+select count(*) from t_pk where 0 < match(c1, c2) against('fox1');
++----------+
+| count(*) |
++----------+
+|      140 |
++----------+
+select count(*) from t_pk where match(c2) against('数据库 性能');
++----------+
+| count(*) |
++----------+
+|      700 |
++----------+
+select count(*) from t_pk where match(c2) against('数据库');
++----------+
+| count(*) |
++----------+
+|      700 |
++----------+
+
+select count(*) from (select id, match(c1, c2) against('fox1 dog3') as s from t_pk where match(c1, c2) against('fox1 dog3')) v where s > 0;
++----------+
+| count(*) |
++----------+
+|      220 |
++----------+
+
+select id from t_pk where match(c1, c2) against('fox2 dog5') order by id limit 10;
++----+
+| id |
++----+
+|  2 |
+|  5 |
+|  7 |
+| 12 |
+| 17 |
+| 19 |
+| 22 |
+| 26 |
+| 27 |
+| 32 |
++----+
+select id from t_heap where match(c1, c2) against('fox2 dog5') order by id limit 10;
++------+
+| id   |
++------+
+|    2 |
+|    5 |
+|    7 |
+|   12 |
+|   17 |
+|   19 |
+|   22 |
+|   26 |
+|   27 |
+|   32 |
++------+
+select count(id), sum(id), max(c1) from t_pk where match(c1, c2) against('fox2 dog5');
++-----------+---------+----------------------------------+
+| count(id) | sum(id) | max(c1)                          |
++-----------+---------+----------------------------------+
+|       220 |   77190 | 全文索引 分词器 测试 97          |
++-----------+---------+----------------------------------+
+select count(id), sum(id), max(c1) from t_heap where match(c1, c2) against('fox2 dog5');
++-----------+---------+----------------------------------+
+| count(id) | sum(id) | max(c1)                          |
++-----------+---------+----------------------------------+
+|       220 |   77190 | 全文索引 分词器 测试 97          |
++-----------+---------+----------------------------------+
+select id, c1 from t_pk where match(c1, c2) against('cherry') and id > 600 order by id;
++-----+------------------------------------------------+
+| id  | c1                                             |
++-----+------------------------------------------------+
+| 602 | Mixed 数据库 Database Ünïcode Straße 602       |
+| 609 | Apple banana ORANGE 609                        |
+| 616 | 全文索引 分词器 测试 616                       |
+| 623 | Mixed 数据库 Database Ünïcode Straße 623       |
+| 630 | Apple banana ORANGE 630                        |
+| 637 | 全文索引 分词器 测试 637                       |
+| 644 | Mixed 数据库 Database Ünïcode Straße 644       |
+| 651 | Apple banana ORANGE 651                        |
+| 658 | 全文索引 分词器 测试 658                       |
+| 665 | Mixed 数据库 Database Ünïcode Straße 665       |
+| 672 | Apple banana ORANGE 672                        |
+| 679 | 全文索引 分词器 测试 679                       |
+| 686 | Mixed 数据库 Database Ünïcode Straße 686       |
+| 693 | Apple banana ORANGE 693                        |
+| 700 | 全文索引 分词器 测试 700                       |
++-----+------------------------------------------------+
+select id from t_pk where match(c1, c2) against('apple') order by id desc limit 3 offset 2;
++-----+
+| id  |
++-----+
+| 693 |
+| 690 |
+| 687 |
++-----+
+select count(*) from t_pk where match(c1, c2) against('apple') and match(c2) against('性能');
++----------+
+| count(*) |
++----------+
+|      233 |
++----------+
+
+select count(*) from (select id from t_pk where match(c1, c2) against('fox1 dog3') limit 20) v;
++----------+
+| count(*) |
++----------+
+|       20 |
++----------+
+select count(*) from (select id from t_pk where match(c1, c2) against('fox1 dog3') limit 5, 1000) v;
++----------+
+| count(*) |
++----------+
+|      215 |
++----------+
+select count(*) from (select id from t_heap where match(c1, c2) against('nothinghere') limit 20) v;
++----------+
+| count(*) |
++----------+
+|        0 |
++----------+
+select count(*) from (select id, c1 from t_pk where match(c1, c2) against('lime') limit 1000) v;
++----------+
+| count(*) |
++----------+
+|      100 |
++----------+
+select count(*) from (select distinct c1 from t_pk where match(c1, c2) against('apple') limit 1000) v;
++----------+
+| count(*) |
++----------+
+|      233 |
++----------+
+select count(*), max(t.id) from (select id from t_pk where match(c1, c2) against('apple') limit 7) t;
++----------+-----------+
+| count(*) | max(t.id) |
++----------+-----------+
+|        7 |        24 |
++----------+-----------+
+
+insert into t_pk values (2001, 'fresh fox1', 'brand new dog3');
+update t_pk set c2 = 'nothing left' where id = 3;
+delete from t_pk where id = 6;
+insert into t_heap values (2001, 'fresh fox1', 'brand new dog3');
+update t_heap set c2 = 'nothing left' where id = 3;
+delete from t_heap where id = 6;
+select count(*) from t_pk where match(c1, c2) against('fox1 dog3');
++----------+
+| count(*) |
++----------+
+|      219 |
++----------+
+select count(*) from t_heap where match(c1, c2) against('fox1 dog3');
++----------+
+| count(*) |
++----------+
+|      219 |
++----------+
+select id from t_pk where match(c1, c2) against('fresh') order by id;
++------+
+| id   |
++------+
+| 2001 |
++------+
+select count(*) from t_pk where match(c1, c2) against('left');
++----------+
+| count(*) |
++----------+
+|        1 |
++----------+
+
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'ik');
++---------------------------------------------------------------------------------------------------------------------+
+| tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'ik')                                |
++---------------------------------------------------------------------------------------------------------------------+
+| ["orange", "banana", "分词器", "n", "apple", "strasse", "code", "ａｂｃ", "全文索引", "e", "的", "stra"]            |
++---------------------------------------------------------------------------------------------------------------------+
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'ik');
++---------------------------------------------------------------------------------------------------------------------+
+| tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'ik')                                |
++---------------------------------------------------------------------------------------------------------------------+
+| ["orange", "banana", "分词器", "n", "apple", "strasse", "code", "ａｂｃ", "全文索引", "e", "的", "stra"]            |
++---------------------------------------------------------------------------------------------------------------------+
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'beng');
++-----------------------------------------------------------------------------------------------------------+
+| tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'beng')                    |
++-----------------------------------------------------------------------------------------------------------+
+| ["orange", "straße", "banana", "apple", "strasse", "ａｂｃ", "ünïcode", "全文索引的分词器"]               |
++-----------------------------------------------------------------------------------------------------------+
+select tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'space');
++-----------------------------------------------------------------------------------------------------------+
+| tokenize('Apple BANANA orange 全文索引的分词器 Ünïcode STRASSE Straße ＡＢＣ', 'space')                   |
++-----------------------------------------------------------------------------------------------------------+
+| ["orange", "straße", "banana", "apple", "strasse", "ａｂｃ", "ünïcode", "全文索引的分词器"]               |
++-----------------------------------------------------------------------------------------------------------+
+select tokenize('中华人民共和国人民大会堂 一百二十三个 3.14 abc-def', 'ik', '[{"additional_args":[{"ik_mode": "max_word"}]}]');
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| tokenize('中华人民共和国人民大会堂 一百二十三个 3.14 abc-def', 'ik', '[{"additional_args":[{"ik_mode": "max_word"}]}]')                                                                                                                                                                                               |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+| ["大会", "人民大会堂", "abc-def", "大会堂", "共和国", "3.14", "十三", "人民大会", "人民共和国", "中华人民", "共和", "一百二十三", "百二", "def", "二十", "三个", "会堂", "中华", "abc", "十三个", "中华人民共和国", "国人", "华人", "人民", "二十三"]                                                                 |
++-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------+
+select tokenize('中华人民共和国人民大会堂 一百二十三个 3.14 abc-def', 'ik');
++-------------------------------------------------------------------------------------------+
+| tokenize('中华人民共和国人民大会堂 一百二十三个 3.14 abc-def', 'ik')                      |
++-------------------------------------------------------------------------------------------+
+| ["个", "人民大会堂", "abc-def", "3.14", "一百二十三", "中华人民共和国"]                   |
++-------------------------------------------------------------------------------------------+
+select tokenize('The quick brown fox jumps over the lazy dog', 'beng', '[{"output": "all"}]');
++------------------------------------------------------------------------------------------------------------------------+
+| tokenize('The quick brown fox jumps over the lazy dog', 'beng', '[{"output": "all"}]')                                 |
++------------------------------------------------------------------------------------------------------------------------+
+| {"tokens": [{"lazy": 1}, {"over": 1}, {"quick": 1}, {"dog": 1}, {"brown": 1}, {"fox": 1}, {"jumps": 1}], "doc_len": 7} |
++------------------------------------------------------------------------------------------------------------------------+
+
+create table t_coll(id int primary key, c varchar(200));
+insert into t_coll values (1, 'Résumé resume RESUME'), (2, 'resume'), (3, 'éclair eclair'),
+  (4, 'Ångström angstrom'), (5, 'a_b a-b A_B ab'), (6, 'zeta Zeta ZETA'), (7, '中文 中文字符'),
+  (8, 'straße strasse'), (9, 'ｆｕｌｌｗｉｄｔｈ fullwidth'), (10, 'naïve naive'), (11, 'Ü u ü');
+alter table t_coll add fulltext index ft_coll(c) with parser beng;
+alter table t_coll add fulltext index ft_coll_ik(c) with parser ik;
+Warnings:
+Warning	1831	Duplicate index 'ft_coll_ik' defined on the table 'fts_perf.t_coll'
+select id from t_coll where match(c) against('resume') order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
++----+
+select id from t_coll where match(c) against('résumé') order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
++----+
+select id from t_coll where match(c) against('eclair') order by id;
++----+
+| id |
++----+
+|  3 |
++----+
+select id from t_coll where match(c) against('angstrom') order by id;
++----+
+| id |
++----+
+|  4 |
++----+
+select id from t_coll where match(c) against('a_b ab') order by id;
++----+
+| id |
++----+
++----+
+select id from t_coll where match(c) against('zeta naive strasse fullwidth') order by id;
++----+
+| id |
++----+
+|  6 |
+|  8 |
+|  9 |
+| 10 |
++----+
+select id from t_coll where match(c) against('ü') order by id;
++----+
+| id |
++----+
++----+
+select count(*) from t_coll where match(c) against('中文');
++----------+
+| count(*) |
++----------+
+|        1 |
++----------+
+select tokenize(c, 'beng') from t_coll order by id;
++----------------------------------------------+
+| tokenize(c, 'beng')                          |
++----------------------------------------------+
+| ["resume"]                                   |
+| ["resume"]                                   |
+| ["eclair"]                                   |
+| ["angstrom"]                                 |
+| []                                           |
+| ["zeta"]                                     |
+| ["中文", "中文字符"]                         |
+| ["straße", "strasse"]                        |
+| ["fullwidth", "ｆｕｌｌｗｉｄｔｈ"]          |
+| ["naive"]                                    |
+| []                                           |
++----------------------------------------------+
+
+drop database fts_perf;
