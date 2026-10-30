@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_text_retrieval_token_iter.h"
+#include "ob_sparse_retrieval_util.h"
 #include "query/das/ob_das_iter_access.h"
 #include "share/rc/ob_server_runtime.h"
 #include "query/engine/expr/ob_expr_bm25.h"
@@ -417,6 +418,7 @@ ObTextRetrievalDaaTTokenIter::ObTextRetrievalDaaTTokenIter()
     doc_id_(),
     id_keys_(nullptr),
     cmp_func_(nullptr),
+    is_fixed_binary_doc_id_(false),
     is_inited_(false)
 {
 }
@@ -440,6 +442,11 @@ int ObTextRetrievalDaaTTokenIter::init(const ObTextRetrievalScanIterParam &iter_
       max_batch_size_ = OB_MAX(iter_param.eval_ctx_->max_batch_size_, 1);
       common::ObDatumBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(inv_scan_domain_id_col_->datum_meta_.type_, CS_TYPE_BINARY);
       cmp_func_ = basic_funcs->null_first_cmp_;
+      // the comparison function is requested with CS_TYPE_BINARY, so a fixed length
+      // binary doc id can be compared with memcmp directly
+      is_fixed_binary_doc_id_ =
+          (ObVarcharType == inv_scan_domain_id_col_->datum_meta_.type_
+           && CS_TYPE_BINARY == inv_scan_domain_id_col_->datum_meta_.cs_type_);
       if (OB_ISNULL(cmp_func_)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (FALSE_IT(relevance_.set_allocator(allocator_))) {
@@ -595,6 +602,45 @@ int ObTextRetrievalDaaTTokenIter::get_next_id_key_batch(const ObTextDocIdKey *&k
   return ret;
 }
 
+int ObTextRetrievalDaaTTokenIter::compare_doc_id(
+    const ObDatum &lhs,
+    const ObDatum &rhs,
+    int &cmp_ret) const
+{
+  int ret = OB_SUCCESS;
+  if (is_fixed_binary_doc_id_ && ObFixedLenBinaryDocId::is_valid_pair(lhs, rhs)) {
+    cmp_ret = ObFixedLenBinaryDocId::compare(lhs, rhs);
+  } else if (OB_FAIL(cmp_func_(lhs, rhs, cmp_ret, nullptr))) {
+  }
+  return ret;
+}
+
+// doc_id_ is filled in the scan order of the inverted index whose rowkey is
+// (word_segment, doc_id), so doc_id_[cur_idx_, count_) is ordered by doc id ascending.
+// Move cur_idx_ to the first buffered doc id that is not less than the target.
+int ObTextRetrievalDaaTTokenIter::advance_in_buffer(const ObDatum &id_datum, bool &found)
+{
+  int ret = OB_SUCCESS;
+  int64_t left = cur_idx_;
+  int64_t right = count_;
+  int cmp_ret = 0;
+  found = false;
+  while (OB_SUCC(ret) && left < right) {
+    const int64_t mid = left + ((right - left) >> 1);
+    if (OB_FAIL(compare_doc_id(id_datum, doc_id_[mid].get_datum(), cmp_ret))) {
+    } else if (cmp_ret <= 0) {
+      right = mid;
+    } else {
+      left = mid + 1;
+    }
+  }
+  if (OB_SUCC(ret)) {
+    cur_idx_ = left;
+    found = (left < count_);
+  }
+  return ret;
+}
+
 int ObTextRetrievalDaaTTokenIter::advance_to(const ObDatum &id_datum)
 {
   int ret = OB_SUCCESS;
@@ -606,12 +652,7 @@ int ObTextRetrievalDaaTTokenIter::advance_to(const ObDatum &id_datum)
   }
   while (OB_SUCC(ret) && !find) {
     if (cur_idx_ < count_) {
-      if (OB_FAIL(cmp_func_(
-              id_datum, doc_id_[cur_idx_].get_datum(), result, nullptr))) {
-      } else if (result <= 0) {
-        find = true;
-      } else {
-        ++cur_idx_;
+      if (OB_FAIL(advance_in_buffer(id_datum, find))) {
       }
     } else if (OB_FAIL(token_iter_->advance_to(id_datum))) {
     } else if (OB_FAIL(get_next_row())) {
@@ -621,8 +662,7 @@ int ObTextRetrievalDaaTTokenIter::advance_to(const ObDatum &id_datum)
       }
     } else if (cur_idx_ != 0) {
       ret = OB_ERR_UNEXPECTED;
-    } else if (OB_FAIL(cmp_func_(
-                   id_datum, doc_id_[cur_idx_].get_datum(), result, nullptr))) {
+    } else if (OB_FAIL(compare_doc_id(id_datum, doc_id_[cur_idx_].get_datum(), result))) {
     } else if (result <= 0) {
       find = true;
     } else {

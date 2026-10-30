@@ -25,16 +25,45 @@ namespace oceanbase
 namespace storage
 {
 
+// The domain id (document id) of the inverted index is a fixed length binary string
+// (ObVarcharType + CS_TYPE_BINARY). CS_TYPE_BINARY compares as ob_strnncoll_binary,
+// i.e. memcmp(min_len) ?: (l_len - r_len), so two non-null, non-ext datums of the
+// same length compare exactly like memcmp over their bytes.
+struct ObFixedLenBinaryDocId
+{
+  static constexpr int64_t DOC_ID_LEN = 16;
+
+  static inline bool is_valid_datum(const ObDatum &datum)
+  {
+    return !datum.is_null() && !datum.is_ext() && DOC_ID_LEN == datum.len_;
+  }
+  static inline bool is_valid_pair(const ObDatum &lhs, const ObDatum &rhs)
+  {
+    return is_valid_datum(lhs) && is_valid_datum(rhs);
+  }
+  static inline int compare(const ObDatum &lhs, const ObDatum &rhs)
+  {
+    const int cmp_ret = MEMCMP(lhs.ptr_, rhs.ptr_, DOC_ID_LEN);
+    return cmp_ret > 0 ? 1 : (cmp_ret < 0 ? -1 : 0);
+  }
+};
+
 class ObDomainIdCmp
 {
 public:
-  ObDomainIdCmp() : cmp_func_(nullptr) {}
+  ObDomainIdCmp() : cmp_func_(nullptr), is_fixed_binary_doc_id_(false) {}
   ~ObDomainIdCmp() {}
   inline int init(const ObObjMeta &obj_meta);
   inline int compare(const ObDatum &lhs, const ObDatum &rhs, int &cmp_ret) const;
-  inline void reset() { cmp_func_ = nullptr; }
+  inline void reset()
+  {
+    cmp_func_ = nullptr;
+    is_fixed_binary_doc_id_ = false;
+  }
 private:
   common::ObDatumCmpFuncType cmp_func_;
+  // whether the domain id is the fixed length binary doc id, see ObFixedLenBinaryDocId
+  bool is_fixed_binary_doc_id_;
   DISALLOW_COPY_AND_ASSIGN(ObDomainIdCmp);
 };
 
@@ -52,6 +81,8 @@ int ObDomainIdCmp::init(const ObObjMeta &obj_meta)
       STORAGE_LOG(WARN,"failed to get basic functions", K(ret), K(obj_meta));
     } else {
       cmp_func_ = id_basic_funcs->null_first_cmp_;
+      is_fixed_binary_doc_id_ = (ObVarcharType == obj_meta.get_type()
+                                 && CS_TYPE_BINARY == obj_meta.get_collation_type());
     }
   }
   return ret;
@@ -78,6 +109,8 @@ int ObDomainIdCmp::compare(const ObDatum &lhs, const ObDatum &rhs, int &cmp_ret)
     } else {
       ret = OB_ERR_UNEXPECTED;
     }
+  } else if (is_fixed_binary_doc_id_ && ObFixedLenBinaryDocId::is_valid_pair(lhs, rhs)) {
+    cmp_ret = ObFixedLenBinaryDocId::compare(lhs, rhs);
   } else {
     ret = cmp_func_(lhs, rhs, cmp_ret, nullptr);
   }

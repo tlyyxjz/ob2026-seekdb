@@ -58,6 +58,8 @@ private:
   //       and avoid deep copy into merge heap here
   const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids_;
   bool is_inited_;
+  // whether the id is the fixed length binary doc id, see ObFixedLenBinaryDocId
+  bool is_fixed_binary_doc_id_;
 };
 
 typedef ObSimpleRowsMerger<ObSRMergeItem, ObSRMergeCmp> ObSRSimpleMerger;
@@ -105,6 +107,9 @@ protected:
   ObFixedArray<double, ObIAllocator> buffered_relevances_;
   ObFixedArray<int64_t, ObIAllocator> next_round_iter_idxes_;
   int64_t next_round_cnt_;
+  // whether the pushdown filter is exactly BOOL(relevance_proj_expr_), then its result
+  // is (0.0 != relevance) and the filter expr does not need to be evaluated
+  bool is_bool_on_relevance_filter_;
   void (*set_datum_func_)(ObDatum &, const ObDocIdExt &);
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRDaaTIterImpl);

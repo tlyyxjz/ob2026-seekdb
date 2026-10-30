@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX STORAGE
 
 #include "ob_sparse_daat_iter.h"
+#include "ob_sparse_retrieval_util.h"
 
 namespace oceanbase
 {
@@ -26,7 +27,8 @@ namespace storage
 ObSRMergeCmp::ObSRMergeCmp()
   : cmp_func_(nullptr),
     iter_ids_(nullptr),
-    is_inited_(false)
+    is_inited_(false),
+    is_fixed_binary_doc_id_(false)
 {
 }
 
@@ -41,6 +43,7 @@ int ObSRMergeCmp::init(
     iter_ids_ = iter_ids;
     common::ObDatumBasicFuncs *basic_funcs = ObDatumFuncs::get_basic_func(id_meta.type_, id_meta.cs_type_);
     cmp_func_ = basic_funcs->null_first_cmp_;
+    is_fixed_binary_doc_id_ = (ObVarcharType == id_meta.type_ && CS_TYPE_BINARY == id_meta.cs_type_);
     if (OB_ISNULL(cmp_func_)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
@@ -59,11 +62,16 @@ int ObSRMergeCmp::cmp(
   if (IS_NOT_INIT) {
     ret = OB_NOT_INIT;
   } else {
-    int tmp_ret = 0;
-    if (OB_FAIL(cmp_func_(
-            get_id_datum(l.iter_idx_), get_id_datum(r.iter_idx_), tmp_ret, nullptr))) {
+    const ObDatum &l_datum = get_id_datum(l.iter_idx_);
+    const ObDatum &r_datum = get_id_datum(r.iter_idx_);
+    if (is_fixed_binary_doc_id_ && ObFixedLenBinaryDocId::is_valid_pair(l_datum, r_datum)) {
+      cmp_ret = ObFixedLenBinaryDocId::compare(l_datum, r_datum);
     } else {
-      cmp_ret = tmp_ret;
+      int tmp_ret = 0;
+      if (OB_FAIL(cmp_func_(l_datum, r_datum, tmp_ret, nullptr))) {
+      } else {
+        cmp_ret = tmp_ret;
+      }
     }
   }
   return ret;
@@ -82,6 +90,7 @@ ObSRDaaTIterImpl::ObSRDaaTIterImpl()
     buffered_relevances_(),
     next_round_iter_idxes_(),
     next_round_cnt_(0),
+    is_bool_on_relevance_filter_(false),
     set_datum_func_(nullptr)
 {
 }
@@ -102,6 +111,16 @@ int ObSRDaaTIterImpl::init(
     iter_param_ = &iter_param;
     dim_iters_ = &dim_iters;
     relevance_collector_ = &relevance_collector;
+    // Pushdown filter built from the match expr has the shape BOOL(match), its result is
+    // decided by the relevance value alone: BOOL(double) is null for a null input and
+    // (0 == d) ? 0 : 1 otherwise, see ObExprBool::calc_bool_expr_for_double_type.
+    is_bool_on_relevance_filter_ =
+        OB_NOT_NULL(iter_param_->filter_expr_)
+        && OB_NOT_NULL(iter_param_->relevance_proj_expr_)
+        && T_OP_BOOL == iter_param_->filter_expr_->type_
+        && 1 == iter_param_->filter_expr_->arg_cnt_
+        && OB_NOT_NULL(iter_param_->filter_expr_->args_)
+        && iter_param_->filter_expr_->args_[0] == iter_param_->relevance_proj_expr_;
     const int64_t max_batch_size = OB_MAX(iter_param_->eval_ctx_->max_batch_size_, iter_param_->max_batch_size_);
     if (iter_param_->id_proj_expr_->datum_meta_.type_ == common::ObUInt64Type) {
       set_datum_func_ = ObISparseRetrievalMergeIter::set_datum_int;
@@ -366,29 +385,38 @@ int ObSRDaaTIterImpl::filter_on_demand(const int64_t count, const double relevan
 
   if (!iter_param_->need_filter()) {
     need_project = true;
-  } else if (eval_ctx->is_vectorized()) {
+  } else if (OB_UNLIKELY(!eval_ctx->is_vectorized())) {
+    // the row by row interface does not filter on relevance, keep it unchanged
+    if (OB_UNLIKELY(0 != count)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      guard.set_batch_idx(0);
+      ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
+      relevance_proj_datum.set_double(relevance);
+      relevance_proj_expr->set_evaluated_projected(*eval_ctx);
+    }
+  } else if (is_bool_on_relevance_filter_) {
+    // the filter is exactly BOOL(relevance): the relevance value is never null, so
+    // BOOL(relevance) is (0 == relevance) ? 0 : 1 and the filter expr can be skipped
     if (OB_UNLIKELY(count >= eval_ctx->max_batch_size_)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
-      guard.set_batch_idx(count);
-      ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
-      relevance_proj_datum.set_double(relevance);
-      relevance_proj_expr->get_evaluated_flags(*eval_ctx).set(count);
-      relevance_proj_expr->set_evaluated_projected(*eval_ctx);
-      ObDatum *filter_res = nullptr;
-      filter_expr->clear_evaluated_flag(*eval_ctx);
-      if (OB_FAIL(filter_expr->eval(*eval_ctx, filter_res))) {
-      } else {
-        need_project = !(filter_res->is_null() || 0 == filter_res->get_int());
-      }
+      need_project = (0.0 != relevance);
     }
-  } else if (OB_UNLIKELY(0 != count)) {
+  } else if (OB_UNLIKELY(count >= eval_ctx->max_batch_size_)) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    guard.set_batch_idx(0);
+    guard.set_batch_idx(count);
     ObDatum &relevance_proj_datum = relevance_proj_expr->locate_datum_for_write(*eval_ctx);
     relevance_proj_datum.set_double(relevance);
+    relevance_proj_expr->get_evaluated_flags(*eval_ctx).set(count);
     relevance_proj_expr->set_evaluated_projected(*eval_ctx);
+    ObDatum *filter_res = nullptr;
+    filter_expr->clear_evaluated_flag(*eval_ctx);
+    if (OB_FAIL(filter_expr->eval(*eval_ctx, filter_res))) {
+    } else {
+      need_project = !(filter_res->is_null() || 0 == filter_res->get_int());
+    }
   }
   return ret;
 }

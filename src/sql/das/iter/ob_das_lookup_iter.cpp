@@ -173,6 +173,11 @@ int ObDASLookupIter::inner_get_next_rows(int64_t &count, int64_t capacity)
   int64_t simulate_batch_row_cnt = - EVENT_CALL(EventTable::EN_TABLE_LOOKUP_BATCH_ROW_COUNT);
   const bool use_simulate_batch_row_cnt = simulate_batch_row_cnt > 0 && simulate_batch_row_cnt < default_batch_row_count_;
   int64_t default_row_batch_cnt  = use_simulate_batch_row_cnt ? simulate_batch_row_cnt : default_batch_row_count_;
+  // A caller asking for less than a full batch (e.g. the rest of a LIMIT) needs at most
+  // that many rows, so do not scan and look up a whole default batch of rowkeys.
+  if (capacity > 0 && capacity < max_size_) {
+    default_row_batch_cnt = std::min(default_row_batch_cnt, capacity);
+  }
   do {
     switch (state_) {
       case INDEX_SCAN: {
