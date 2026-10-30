@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 
+#include "sql/engine/basic/ob_file_sql_engine.h"
 #include "config_bridge.h"
 #include "share/config/ob_config_helper.h"
 #include "sql/resolver/cmd/ob_load_data_stmt.h"
@@ -122,6 +123,17 @@ int ObResolverUtils::get_all_function_table_column_names(const TableItem &table_
 {
   int ret = OB_SUCCESS;
   ObRawExpr *table_expr = NULL;
+  if (is_file_table_expression(table_item.function_table_expr_)) {
+    try {
+      auto definition = file_table_definition(table_item.function_table_expr_);
+      for (const auto &column : definition.columns) {
+        ObString name;
+        OZ(ob_write_string(*params.allocator_, ObString(column.name.size(), column.name.data()), name));
+        OZ(column_names.push_back(name));
+      }
+    } catch (const std::exception &error) { ret = OB_INVALID_ARGUMENT; LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.what()); }
+    return ret;
+  }
   ObPLPackageGuard *package_guard = nullptr;
   const ObUserDefinedType *user_type = NULL;
   ObExecContext *exec_ctx = params.session_info_->get_cur_exec_ctx();

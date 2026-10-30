@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL
+#include "sql/engine/basic/ob_ai_column_runtime.h"
 #include "ob_result_set.h"
 #include "data_plane/transaction/ob_tx_desc_access.h"
 #include "share/rc/ob_server_runtime.h"
@@ -218,6 +219,7 @@ int ObResultSet::open_result()
   if (NULL != physical_plan_) {
     if (OB_ISNULL(exec_result_)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(check_ai_column_strict_read(get_exec_context()))) {
     } else if (OB_FAIL(exec_result_->open(get_exec_context()))) {
       if (OB_TRANSACTION_SET_VIOLATION != ret && OB_TRY_LOCK_ROW_CONFLICT != ret) {
         SQL_LOG(WARN, "fail open main query", K(ret));

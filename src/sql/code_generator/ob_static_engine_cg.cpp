@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_ENG
 
+#include "sql/engine/basic/ob_file_sql_engine.h"
 #include "config_bridge.h"
 #include "ob_static_engine_cg.h"
 #include "sql/optimizer/ob_log_group_by.h"
@@ -5453,7 +5454,6 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
   if (OB_UNLIKELY(1 != op.get_num_of_child())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_outfile_name(), spec.outfile_name_))) {
-  } else if (OB_FAIL(deep_copy_obj(alloc, op.get_header_line(), spec.header_line_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_field_str(), spec.field_str_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_line_str(), spec.line_str_))) {
   } else if (OB_FAIL(deep_copy_obj(alloc, op.get_closed_cht(), spec.closed_cht_))) {
@@ -5462,6 +5462,21 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
   } else if (OB_FAIL(spec.user_vars_.init(op.get_user_vars().count()))) {
   } else if (OB_FAIL(spec.select_exprs_.init(op.get_select_exprs().count()))) {
   } else {
+    const ObString &properties = op.get_external_properties();
+    if (file_sql::Definition::is_descriptor(properties.ptr(), properties.length())) {
+      try {
+        auto definition = file_sql::Definition::deserialize(std::string(properties.ptr(), properties.length()));
+        definition.columns.clear();
+        const auto *select = static_cast<const ObSelectStmt *>(op.get_stmt());
+        for (int64_t i = 0; i < select->get_select_item_size(); ++i) {
+          const SelectItem &item = select->get_select_item(i);
+          const ObString &name = item.alias_name_.empty() ? item.expr_name_ : item.alias_name_;
+          definition.columns.push_back({std::string(name.ptr(), name.length()), file_sql::Type::Varchar, true});
+        }
+        std::string bytes = definition.serialize();
+        OZ(spec.external_properties_.store_str(ObString(bytes.size(), bytes.data())));
+      } catch (const std::exception &error) { ret = OB_INVALID_ARGUMENT; LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.what()); }
+    }
     ObString var;
     for (int64_t i = 0; OB_SUCC(ret) && i < op.get_user_vars().count(); ++i) {
       var.reset();
@@ -5512,6 +5527,8 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
   } else {
     spec.has_correlated_expr_ = value_raw_expr->has_flag(CNT_DYNAMIC_PARAM);
     spec.value_expr_ = value_expr;
+    const bool file_table = is_file_table_expression(value_raw_expr);
+    if (file_table) OZ(spec.file_column_ids_.init(op.get_stmt()->get_column_size()));
     for (int64_t i = 0; OB_SUCC(ret) && i < op.get_output_exprs().count(); ++i) {
       if (OB_FAIL(mark_expr_self_produced(op.get_output_exprs().at(i)))) {
       }
@@ -5527,6 +5544,7 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
         OZ (mark_expr_self_produced(col_item->expr_));
         OZ (generate_rt_expr(*col_item->expr_, rt_expr));
         OZ (spec.column_exprs_.push_back(rt_expr));
+        if (file_table) OZ(spec.file_column_ids_.push_back(col_item->column_id_ - OB_APP_MIN_COLUMN_ID));
       }
     }
   }

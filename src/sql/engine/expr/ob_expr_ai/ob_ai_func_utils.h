@@ -279,6 +279,9 @@ private:
 class ObAIFuncUtils 
 {
 public:
+  static int validate_embedding_result(ObIAllocator &allocator, ObIJsonBase *result, int64_t dimension = 0);
+  static int normalize_rerank_result(ObIAllocator &allocator, ObIJsonBase *result,
+                                     int64_t count, ObJsonArray *&normalized);
   ObAIFuncUtils() {}
   virtual ~ObAIFuncUtils() {}
   static bool is_completion_type(const ObAIFuncExprInfo *info) {return info->type_ == share::EndpointType::COMPLETION;}
@@ -353,6 +356,7 @@ public:
    virtual ~ObAIFuncModel() {}
    // completion
    int call_completion(ObString &prompt, ObJsonObject *config, ObString &result);
+   int call_completion_with_system(ObString &content, const ObString &system, ObJsonObject *config, ObString &result);
    int call_completion_vector(ObArray<ObString> &prompts, ObJsonObject *config, ObArray<ObString> &results);
    // dense_embedding
    int call_dense_embedding(ObString &content, ObJsonObject *config, ObString &result);

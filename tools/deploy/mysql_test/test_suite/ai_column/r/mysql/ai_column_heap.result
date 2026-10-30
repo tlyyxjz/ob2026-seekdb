@@ -1,0 +1,30 @@
+select count(*)=2 and sum(bad_date is null)=2 as mixed_group_published from ai_column_heap_regression.docs;
+mixed_group_published
+1
+set session ai_column_strict_read=ON;
+select count(label)=2 as ready_column_readable from ai_column_heap_regression.docs;
+ready_column_readable
+1
+select bad_date from ai_column_heap_regression.docs;
+set session ai_column_strict_read=OFF;
+create vector index heap_vi on ai_column_heap_regression.docs(emb)
+with(distance=l2,type=hnsw,lib=vsag,m=10,ef_construction=12,ef_search=40);
+start transaction;
+update ai_column_heap_regression.docs set body='vec-zero' where id=1;
+select emb is null as old_vector_invalidated from ai_column_heap_regression.docs where id=1;
+old_vector_invalidated
+1
+rollback;
+select emb=[10,0,0,0] as rollback_restored_vector from ai_column_heap_regression.docs where id=1;
+rollback_restored_vector
+1
+update ai_column_heap_regression.docs set body='vec-zero' where id=1;
+select id from ai_column_heap_regression.docs order by l2_distance(emb,[0,0,0,0]) approximate limit 1;
+id
+1
+select count(*)=0 as tasks_cleaned from oceanbase.__all_ai_column_task q
+join oceanbase.__all_table t on q.table_id=t.table_id
+join oceanbase.__all_database d on t.database_id=d.database_id
+where d.database_name='ai_column_heap_regression';
+tasks_cleaned
+1

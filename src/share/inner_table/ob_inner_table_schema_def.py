@@ -342,7 +342,8 @@ all_column_def = dict(
       ('sub_data_type', 'int', 'false', '0'),
       ('skip_index_attr', 'int', 'false', '0'),
       ('lob_chunk_size', 'int', 'false', 'OB_DEFAULT_LOB_CHUNK_SIZE'),
-      ('local_session_vars', 'longtext', 'true')
+      ('local_session_vars', 'longtext', 'true'),
+      ('ai_column_info', 'varchar:65535', 'true')
   ]
   )
 
@@ -2441,10 +2442,7 @@ all_ai_model_endpoint_def = dict(
         ('request_model_name', 'varchar:128', 'true'),
         ('parameters', 'varchar:2048', 'true'),
         ('request_transform_fn', 'varchar:64', 'true'),
-        ('response_transform_fn', 'varchar:64', 'true'),
-        # Upper bound on in-flight requests against a single endpoint.  NULL keeps
-        # the caller's own concurrency, i.e. no per-endpoint cap is enforced.
-        ('max_concurrency', 'int', 'true')
+        ('response_transform_fn', 'varchar:64', 'true')
     ]
 )
 def_table_schema(**all_ai_model_endpoint_def)
@@ -2469,6 +2467,27 @@ all_objauth_mysql_def = dict(
   )
 def_table_schema(**all_objauth_mysql_def)
 def_table_schema(**gen_history_table_def(1134, all_objauth_mysql_def))
+
+# Asynchronous AI column work is transactional data, not a volatile process queue.
+def_table_schema(
+    owner='database-competition', table_name='__all_ai_column_task', table_id='1141',
+    table_type='SYSTEM_TABLE', gm_columns=['gmt_create', 'gmt_modified'],
+    rowkey_columns=[('table_id', 'int'), ('request_id', 'varchar:64'), ('column_id', 'int')],
+    is_cluster_private=False, meta_record_in_sys=False,
+    normal_columns=[
+      ('rowkey_predicate', 'varchar:8192', 'false'),
+      ('definition_version', 'varchar:64', 'false'),
+      ('model_name', 'varchar:128', 'false'),
+      ('input_text', 'longtext', 'true'),
+      ('state', 'int', 'false', '0'),
+      ('retry_count', 'int', 'false', '0'),
+      ('eligible_ts', 'timestamp', 'true'),
+      ('lease_until', 'timestamp', 'true'),
+      ('claim_id', 'varchar:64', 'true'),
+      ('result_text', 'longtext', 'true'),
+      ('error_code', 'int', 'false', '0')
+    ])
+
 
 
 # Reserved position (placeholder before this line)
@@ -13822,8 +13841,7 @@ def_table_schema(
       REQUEST_MODEL_NAME,
       PARAMETERS,
       REQUEST_TRANSFORM_FN,
-      RESPONSE_TRANSFORM_FN,
-      MAX_CONCURRENCY
+      RESPONSE_TRANSFORM_FN
     FROM oceanbase.__all_ai_model_endpoint WHERE ENDPOINT_ID != -1;
   """.replace("\n", " ")
 )
@@ -13873,6 +13891,24 @@ def_table_schema(
 # Reserved position (placeholder before this line)
 # Placeholder suggestion for this section: Use the actual view name for placeholder
 ################################################################################
+
+def_table_schema(
+    owner='database-competition', table_name='__all_ai_column', table_id='24910',
+    table_type='SYSTEM_VIEW', gm_columns=[], rowkey_columns=[], normal_columns=[],
+    view_definition="""
+      SELECT table_id, column_id, column_name,
+        JSON_UNQUOTE(JSON_EXTRACT(ai_column_info, '$.expression')) AS expression,
+        JSON_UNQUOTE(JSON_EXTRACT(ai_column_info, '$.normalized_expr')) AS normalized_expr,
+        JSON_UNQUOTE(JSON_EXTRACT(ai_column_info, '$.sync_mode')) AS sync_mode,
+        CAST(JSON_EXTRACT(ai_column_info, '$.max_retries') AS SIGNED) AS max_retries,
+        CAST(JSON_EXTRACT(ai_column_info, '$.state_column_id') AS UNSIGNED) AS state_column_id,
+        CAST(JSON_EXTRACT(ai_column_info, '$.request_column_id') AS UNSIGNED) AS request_column_id,
+        CAST(JSON_EXTRACT(ai_column_info, '$.result_spec_column_id') AS UNSIGNED) AS result_spec_column_id,
+        JSON_UNQUOTE(JSON_EXTRACT(ai_column_info, '$.definition_version')) AS definition_version,
+        ai_column_info
+      FROM oceanbase.__all_column WHERE ai_column_info IS NOT NULL AND ai_column_info <> ''
+    """.replace('\n', ' '))
+
 # End of MySQL System View (20000, 25000]
 ################################################################################
 ################################### Placeholder Notice ###################################

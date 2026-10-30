@@ -7451,6 +7451,9 @@ int ObDDLService::fill_new_column_attributes(
     new_column_schema.set_schema_version(new_schema_version);
     new_column_schema.set_on_update_current_timestamp(
         alter_column_schema.is_on_update_current_timestamp());
+    if (alter_column_schema.is_ai_column()) {
+      if (OB_FAIL(new_column_schema.set_ai_column_info(alter_column_schema.get_ai_column_info()))) return ret;
+    }
     new_column_schema.set_extended_type_info(alter_column_schema.get_extended_type_info());
     new_column_schema.set_srs_id(alter_column_schema.get_srs_id());
     new_column_schema.set_skip_index_attr(alter_column_schema.get_skip_index_attr().get_packed_value());

@@ -10982,10 +10982,23 @@
     "default_value": "0",
     "base_value": "0",
     "data_type": "bool",
-    "info": " ",
-    "flags": "GLOBAL | SESSION | NEED_SERIALIZE",
-    "publish_version": "",
-    "info_cn": "",
+    "info": "Enable read-only local file SQL, subject to secure_file_priv",
+    "flags": "SESSION | GLOBAL | INFLUENCE_PLAN | NEED_SERIALIZE",
+    "publish_version": "1.0.0.0",
+    "info_cn": "启用受 secure_file_priv 限制的本地文件 SQL",
+    "background_cn": "",
+    "ref_url": ""
+  },
+  "ai_column_strict_read": {
+    "id": 10755,
+    "name": "ai_column_strict_read",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "Reject referenced AI columns containing non-ready rows",
+    "flags": "SESSION | GLOBAL | INFLUENCE_PLAN | NEED_SERIALIZE",
+    "publish_version": "1.0.0.0",
+    "info_cn": "严格读取异步 AI 列",
     "background_cn": "",
     "ref_url": ""
   }

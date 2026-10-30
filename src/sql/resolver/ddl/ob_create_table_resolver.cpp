@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/resolver/ddl/ob_ai_column_resolver.h"
 #include "sql/resolver/ddl/ob_create_table_resolver.h"
 #include "sql/resolver/dml/ob_select_resolver.h"
 #include "sql/resolver/ddl/ob_fts_index_builder_util.h"
@@ -950,6 +951,12 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       } else if (OB_FAIL(resolve_primary_key_node_in_heap_table(primary_node_in_heap_table, stats, resolved_cols))) {
       }
     }
+  }
+  if (OB_SUCC(ret) && resolve_rule != RESOLVE_NON_COL) {
+    auto &ai_schema = static_cast<ObCreateTableStmt *>(stmt_)->get_create_table_arg().schema_;
+    ret = finalize_ai_columns(ai_schema);
+    if (OB_SUCC(ret)) ret = validate_ai_column_expressions(ai_schema, params_);
+    if (OB_SUCC(ret)) cur_column_id_ = ai_schema.get_max_used_column_id();
   }
   return ret;
 }

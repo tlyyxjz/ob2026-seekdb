@@ -17,6 +17,8 @@
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/ddl/ob_explain_resolver.h"
 #include "sql/resolver/ob_resolver.h"
+#include "sql/engine/basic/ob_file_sql_engine.h"
+#include "sql/parser/ob_parser.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -63,6 +65,52 @@ int ObExplainResolver::resolve(const ParseNode &parse_tree)
         ret = OB_ERR_UNEXPECTED;
         LOG_WARN("failed to generate stmt for child stmt");
       } else {
+        if (parse_tree.is_tree_not_param_ && child_stmt->is_select_stmt()) {
+          auto *select = static_cast<ObSelectStmt *>(child_stmt);
+          bool file_query = false;
+          for (int64_t i = 0; i < select->get_table_size(); ++i) {
+            file_query |= is_file_table_expression(select->get_table_item(i)->function_table_expr_);
+          }
+          if (file_query) {
+            try {
+              auto quote = [](const ObString &value) {
+                std::string out("CONVERT(0x");
+                const char *hex = "0123456789abcdef";
+                for (int32_t i = 0; i < value.length(); ++i) {
+                  unsigned char c = value.ptr()[i]; out.push_back(hex[c >> 4]); out.push_back(hex[c & 15]);
+                }
+                out += " USING utf8mb4)"; return out;
+              };
+              std::string sql;
+              for (int64_t i = 0; i < select->get_select_item_size(); ++i) {
+                const SelectItem &item = select->get_select_item(i);
+                std::string type = "VARCHAR", nullable = "YES";
+                if (item.expr_->is_column_ref_expr()) {
+                  auto *column = static_cast<ObColumnRefRawExpr *>(item.expr_);
+                  auto *table = select->get_table_item_by_id(column->get_table_id());
+                  if (table && is_file_table_expression(table->function_table_expr_)) {
+                    auto definition = file_table_definition(table->function_table_expr_);
+                    const auto &meta = definition.columns.at(column->get_column_id() - OB_APP_MIN_COLUMN_ID);
+                    type = file_sql::type_name(meta.type); nullable = meta.nullable ? "YES" : "NO";
+                  }
+                }
+                if (i) sql += " UNION ALL ";
+                sql += "SELECT " + quote(item.alias_name_.empty() ? item.expr_name_ : item.alias_name_)
+                    + " AS column_name," + quote(ObString(type.size(), type.data())) + " AS column_type,"
+                    + quote(ObString(nullable.size(), nullable.data())) + " AS `null`,NULL AS `key`,NULL AS `default`,NULL AS extra";
+              }
+              ParseResult parsed;
+              ObParser parser(*allocator_, session_info_->get_sql_mode());
+              if (OB_SUCC(ret = parser.parse(ObString(sql.size(), sql.data()), parsed))) {
+                ObStmt *metadata = nullptr;
+                ret = resolver.resolve(ObResolver::IS_NOT_PREPARED_STMT, *parsed.result_tree_->children_[0], metadata);
+                if (OB_SUCC(ret)) set_basic_stmt(metadata);
+              }
+              return ret;
+            } catch (const std::bad_alloc &) { return OB_ALLOCATE_MEMORY_FAILED; }
+            catch (const std::exception &error) { LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.what()); return OB_INVALID_ARGUMENT; }
+          }
+        }
         explain_stmt->set_explain_query_stmt(static_cast<ObDMLStmt *>(child_stmt));
         ParseNode *format = parse_tree.children_[EXPLAIN_FORMAT];
         if (NULL != format) {

@@ -35,6 +35,7 @@
 #include "observer/ob_req_time_service.h"
 #include "observer/omt/ob_ai_service.h"
 #include "observer/ai_service/ob_ai_service_executor.h"
+#include "observer/ai_service/ai_column_service.h"
 #include "observer/dbms_scheduler/ob_dbms_sched_service.h"
 #include "storage/lob/ob_lob_manager.h"
 #include "storage/compaction/ob_freeze_info_mgr.h"
@@ -1348,6 +1349,9 @@ int ObServer::start()
     set_stop();
   } else if (!stop_) {
     GCTX.status_ = SS_SERVING;
+    if (OB_FAIL(AiColumnService::instance().start_service())) {
+      LOG_WARN("cannot start AI column worker", K(ret));
+    }
     GCTX.start_service_time_ = start_service_time;
     FLOG_INFO("[OBSERVER_NOTICE] observer start service", "start_service_time", GCTX.start_service_time_);
     LOG_DBA_INFO_V2(OB_SERVER_START_SUCCESS,
@@ -1551,6 +1555,7 @@ int ObServer::stop()
 {
   int ret = OB_SUCCESS;
   int fail_ret = OB_SUCCESS;
+  AiColumnService::instance().stop_service();
   FLOG_INFO("[OBSERVER_NOTICE] stop observer begin");
   LOG_DBA_INFO_V2(OB_SERVER_STOP_BEGIN, "observer stop begin.");
 

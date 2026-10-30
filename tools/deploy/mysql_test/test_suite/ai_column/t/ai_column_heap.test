@@ -1,0 +1,89 @@
+# Heap identity survives BEFORE INSERT and native vector-index maintenance.
+connection default;
+--disable_query_log
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py start 19127
+--disable_warnings
+drop database if exists ai_column_heap_regression;
+--enable_warnings
+create database ai_column_heap_regression;
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('heap_text_ep');
+--error 0,11112
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('heap_embed_ep');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('heap_text');
+--error 0,11118
+call DBMS_AI_SERVICE.DROP_AI_MODEL('heap_embed');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('heap_text','{"type":"completion","model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('heap_text_ep','{"ai_model_name":"heap_text","url":"http://127.0.0.1:19127/v1/chat/completions","access_key":"heap-test","provider":"openai","request_model_name":"mock-complete"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL('heap_embed','{"type":"dense_embedding","model_name":"mock-embed"}');
+call DBMS_AI_SERVICE.CREATE_AI_MODEL_ENDPOINT('heap_embed_ep','{"ai_model_name":"heap_embed","url":"http://127.0.0.1:19127/v1/embeddings","access_key":"heap-test","provider":"openai","request_model_name":"mock-embed"}');
+create table ai_column_heap_regression.docs(id bigint, body varchar(100),
+ label json AI COLUMN(AI_COMPLETE('heap_text',body)) WITH(max_retries=0),
+ bad_date date AI COLUMN(AI_COMPLETE('heap_text',body)) WITH(max_retries=0),
+ emb vector(4) AI COLUMN(AI_EMBED('heap_embed',body,4)) WITH(max_retries=0));
+set session ai_column_strict_read=ON;
+insert into ai_column_heap_regression.docs(id,body) values(1,'vec-ten'),(2,'vec-twenty');
+set session ai_column_strict_read=OFF;
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select count(*)=2 from ai_column_heap_regression.docs where label is not null and emb is not null`;
+ if ($ready == 1)
+ {
+  let $retry=0;
+ }
+ if ($ready == 0)
+ {
+  --real_sleep 0.1
+  dec $retry;
+ }
+}
+--enable_query_log
+select count(*)=2 and sum(bad_date is null)=2 as mixed_group_published from ai_column_heap_regression.docs;
+set session ai_column_strict_read=ON;
+select count(label)=2 as ready_column_readable from ai_column_heap_regression.docs;
+--disable_result_log
+--error 11120
+select bad_date from ai_column_heap_regression.docs;
+--enable_result_log
+set session ai_column_strict_read=OFF;
+create vector index heap_vi on ai_column_heap_regression.docs(emb)
+ with(distance=l2,type=hnsw,lib=vsag,m=10,ef_construction=12,ef_search=40);
+start transaction;
+update ai_column_heap_regression.docs set body='vec-zero' where id=1;
+select emb is null as old_vector_invalidated from ai_column_heap_regression.docs where id=1;
+rollback;
+select emb=[10,0,0,0] as rollback_restored_vector from ai_column_heap_regression.docs where id=1;
+update ai_column_heap_regression.docs set body='vec-zero' where id=1;
+--disable_query_log
+let $retry=150;
+let $ready=0;
+while ($retry)
+{
+ let $ready=`select ifnull(emb=[0,0,0,0],0) from ai_column_heap_regression.docs where id=1`;
+ if ($ready == 1)
+ {
+  let $retry=0;
+ }
+ if ($ready == 0)
+ {
+  --real_sleep 0.1
+  dec $retry;
+ }
+}
+--enable_query_log
+select id from ai_column_heap_regression.docs order by l2_distance(emb,[0,0,0,0]) approximate limit 1;
+select count(*)=0 as tasks_cleaned from oceanbase.__all_ai_column_task q
+ join oceanbase.__all_table t on q.table_id=t.table_id
+ join oceanbase.__all_database d on t.database_id=d.database_id
+ where d.database_name='ai_column_heap_regression';
+--disable_query_log
+drop database ai_column_heap_regression;
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('heap_text_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL_ENDPOINT('heap_embed_ep');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('heap_text');
+call DBMS_AI_SERVICE.DROP_AI_MODEL('heap_embed');
+--exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py stop 19127
+--enable_query_log

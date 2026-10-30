@@ -18,6 +18,7 @@
 #define SRC_SQL_ENGINE_BASIC_OB_SELECT_INTO_OP_H_
 
 #include "sql/engine/ob_operator.h"
+#include "sql/engine/basic/ob_file_scan_utils.h"
 #include "lib/file/ob_file.h"
 #include "sql/engine/cmd/ob_load_data_parser.h"
 #include "sql/engine/basic/ob_select_into_basic.h"
@@ -59,7 +60,6 @@ public:
       into_type_(T_INTO_OUTFILE),
       user_vars_(alloc),
       outfile_name_(),
-      header_line_(),
       field_str_(),
       line_str_(),
       closed_cht_(),
@@ -79,7 +79,6 @@ public:
   ObItemType into_type_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> user_vars_;
   common::ObObj outfile_name_;
-  common::ObObj header_line_; // the header line of COPY ... (header)
   common::ObObj field_str_;
   common::ObObj line_str_;
   common::ObObj closed_cht_;
@@ -128,8 +127,7 @@ public:
       external_properties_(),
       format_type_(ObExternalFileFormat::FormatType::CSV_FORMAT),
       block_id_(0),
-      need_commit_(true),
-      header_written_(false)
+      need_commit_(true), copy_complete_(false)
   {
   }
 
@@ -267,6 +265,7 @@ private:
   bool file_need_split(int64_t file_size);
 
 private:
+  int write_file_copy(bool batch);
   int64_t top_limit_cnt_;
   bool is_first_;
   ObObj field_str_;
@@ -295,7 +294,8 @@ private:
   ObExternalFileFormat::FormatType format_type_;
   uint32_t block_id_;
   bool need_commit_;
-  bool header_written_;
+  std::unique_ptr<file_sql::CsvWriter> copy_writer_;
+  bool copy_complete_;
   static const int64_t SHARED_BUFFER_SIZE = 2LL * 1024 * 1024;
 
 };

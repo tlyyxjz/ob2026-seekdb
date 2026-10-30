@@ -17,6 +17,10 @@
 #define USING_LOG_PREFIX SQL_ENG
 
 #include "sql/engine/basic/ob_function_table_op.h"
+#include "pl/ob_pl_user_type.h"
+#include "sql/engine/basic/ob_file_sql_engine.h"
+#include "common/timezone/ob_time_convert.h"
+#include <cstring>
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
 
@@ -27,7 +31,7 @@ using namespace common;
 namespace sql
 {
 
-OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_);
+OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_, file_column_ids_);
 
 int ObFunctionTableOp::inner_open()
 {
@@ -36,6 +40,23 @@ int ObFunctionTableOp::inner_open()
   already_calc_ = false;
   if (OB_ISNULL(MY_SPEC.value_expr_)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (MY_SPEC.value_expr_->datum_meta_.type_ == ObVarcharType) {
+    ObDatum *datum = nullptr;
+    if (OB_FAIL(MY_SPEC.value_expr_->eval(eval_ctx_, datum))) {
+    } else if (datum != nullptr && !datum->is_null()
+               && file_sql::Definition::is_descriptor(datum->ptr_, datum->len_)) {
+      std::string root;
+      if (OB_SUCC(check_file_sql_access(ctx_.get_my_session(), root))) {
+        try {
+          file_definition_.reset(new file_sql::Definition(file_sql::Definition::deserialize(std::string(datum->ptr_, datum->len_))));
+          std::vector<size_t> projection;
+          for (int64_t index : MY_SPEC.file_column_ids_) projection.push_back(index);
+          file_scan_.reset(new file_sql::Scan(*file_definition_, root, projection));
+          next_row_func_ = &ObFunctionTableOp::inner_get_next_row_file;
+        } catch (const std::bad_alloc &) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+        catch (const std::exception &error) { ret = OB_INVALID_ARGUMENT; LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.what()); }
+      } else ret = OB_NOT_SUPPORTED;
+    } else next_row_func_ = &ObFunctionTableOp::inner_get_next_row_sys_func;
   } else if (ObExtendType == MY_SPEC.value_expr_->datum_meta_.type_) {
     next_row_func_ = &ObFunctionTableOp::inner_get_next_row_udf;
   } else {
@@ -47,6 +68,7 @@ int ObFunctionTableOp::inner_open()
 int ObFunctionTableOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
+  if (file_scan_) { file_scan_.reset(); file_definition_.reset(); return inner_open(); }
   if (OB_FAIL(ObOperator::inner_rescan())) {
   } else {
     node_idx_ = 0;
@@ -62,6 +84,7 @@ int ObFunctionTableOp::inner_rescan()
 
 int ObFunctionTableOp::inner_close()
 {
+  file_scan_.reset(); file_definition_.reset();
   int ret = OB_SUCCESS;
   node_idx_ = 0;
   row_count_ = 0;
@@ -72,9 +95,84 @@ int ObFunctionTableOp::inner_close()
 
 void ObFunctionTableOp::destroy()
 {
+  file_scan_.reset(); file_definition_.reset();
   ObOperator::destroy();
 }
 
+
+int ObFunctionTableOp::read_file_row()
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(ctx_.check_status())) return ret;
+  try {
+    std::vector<file_sql::Cell> row;
+    if (!file_scan_->next(row)) return OB_ITER_END;
+    if (row.size() != static_cast<size_t>(MY_SPEC.column_exprs_.count())) return OB_ERR_UNEXPECTED;
+    file_row_bytes_ = 0;
+    for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_exprs_.count(); ++i) {
+      const auto &cell = row[i];
+      file_row_bytes_ += cell.text.size();
+      ObExpr &expr = *MY_SPEC.column_exprs_[i];
+      ObDatum &datum = expr.locate_datum_for_write(eval_ctx_);
+      file_sql::Type type = file_definition_->columns.at(MY_SPEC.file_column_ids_[i]).type;
+      std::string text = cell.text;
+      if (cell.is_null || type == file_sql::Type::Null) datum.set_null();
+      else if (type == file_sql::Type::Boolean) {
+        datum.set_int(text.size() == 4 && (text[0] == 't' || text[0] == 'T') ? 1 : 0);
+      } else if (type == file_sql::Type::Bigint || type == file_sql::Type::Double) {
+        if (cell.type == file_sql::Type::Boolean) text = text.size() == 4 && (text[0] == 't' || text[0] == 'T') ? "1" : "0";
+        if (type == file_sql::Type::Bigint) datum.set_int(std::stoll(text));
+        else datum.set_double(std::stod(text));
+      } else if (type == file_sql::Type::Date) {
+        int32_t date = 0;
+        OZ(ObTimeConverter::str_to_date(ObString(text.size(), text.data()), date));
+        if (OB_SUCC(ret)) datum.set_date(date);
+      } else if (type == file_sql::Type::Datetime) {
+        if (text.size() > 10 && text[10] == 'T') text[10] = ' ';
+        int64_t datetime = 0;
+        ObTimeConvertCtx time_ctx(nullptr, false);
+        OZ(ObTimeConverter::str_to_datetime(ObString(text.size(), text.data()), time_ctx, datetime));
+        if (OB_SUCC(ret)) datum.set_datetime(datetime);
+      } else {
+        char *buffer = expr.get_str_res_mem(eval_ctx_, text.size());
+        if (buffer == nullptr && !text.empty()) ret = OB_ALLOCATE_MEMORY_FAILED;
+        else {
+          if (!text.empty()) std::memcpy(buffer, text.data(), text.size());
+          datum.set_string(buffer == nullptr ? "" : buffer, text.size());
+        }
+      }
+      if (OB_SUCC(ret)) expr.set_evaluated_projected(eval_ctx_);
+    }
+  } catch (const std::bad_alloc &) { ret = OB_ALLOCATE_MEMORY_FAILED; }
+  catch (const std::exception &error) { ret = OB_INVALID_ARGUMENT; LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.what()); }
+  return ret;
+}
+
+int ObFunctionTableOp::inner_get_next_row_file()
+{
+  clear_evaluated_flag();
+  return read_file_row();
+}
+
+int ObFunctionTableOp::inner_get_next_batch(int64_t max_row_cnt)
+{
+  if (!file_scan_) return ObOperator::inner_get_next_batch(max_row_cnt);
+  int ret = OB_SUCCESS;
+  clear_evaluated_flag();
+  brs_.size_ = 0; brs_.end_ = false;
+  ObEvalCtx::BatchInfoScopeGuard guard(eval_ctx_);
+  int64_t capacity = std::min<int64_t>(max_row_cnt, MY_SPEC.max_batch_size_);
+  brs_.skip_->reset(capacity);
+  guard.set_batch_size(capacity);
+  int64_t bytes = 0;
+  while (OB_SUCC(ret) && brs_.size_ < capacity && bytes < 8 * 1024 * 1024) {
+    guard.set_batch_idx(brs_.size_);
+    if (OB_FAIL(read_file_row())) {
+      if (ret == OB_ITER_END) { brs_.end_ = true; ret = OB_SUCCESS; break; }
+    } else { ++brs_.size_; bytes += file_row_bytes_; }
+  }
+  return ret;
+}
 
 int ObFunctionTableOp::get_current_result(ObObj &result)
 {

@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_OPT
+#include "sql/engine/basic/ob_ai_column_runtime.h"
 #include "lib/stat/ob_diagnostic_info_guard.h"
 #include "ob_sql_utils.h"
 #include "sql/executor/ob_maintain_dependency_info_task.h"
@@ -3373,7 +3374,9 @@ bool ObSQLUtils::is_iter_uncommitted_row(ObExecContext *cur_ctx)
 
 bool ObSQLUtils::is_nested_sql(ObExecContext *cur_ctx)
 {
-  return is_pl_nested_sql(cur_ctx) || is_fk_nested_sql(cur_ctx) || is_online_stat_gathering_nested_sql(cur_ctx);
+  return is_pl_nested_sql(cur_ctx) || is_fk_nested_sql(cur_ctx) || is_online_stat_gathering_nested_sql(cur_ctx)
+      // AI readiness preflights share the caller transaction like FK reads.
+      || is_ai_column_read_check();
 }
 
 //bind current execute context to my session,

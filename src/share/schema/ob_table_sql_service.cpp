@@ -3187,6 +3187,7 @@ int ObTableSqlService::gen_column_dml_without_check(
     if (OB_SUCC(ret) && (OB_FAIL(dml.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                                                     column.get_table_id())))
                          || OB_FAIL(dml.add_pk_column("column_id", column.get_column_id()))
+                         || OB_FAIL(dml.add_column("ai_column_info", ObHexEscapeSqlStr(column.get_ai_column_info())))
                          || OB_FAIL(dml.add_column("column_name", ObHexEscapeSqlStr(column.get_column_name())))
                          || OB_FAIL(dml.add_column("rowkey_position", column.get_rowkey_position()))
                          || OB_FAIL(dml.add_column("index_position", column.get_index_position()))

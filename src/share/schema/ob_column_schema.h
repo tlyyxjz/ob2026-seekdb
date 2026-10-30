@@ -68,6 +68,16 @@ int assign(const ObColumnSchemaV2 &src_schema);
 
 //set methods
   
+  int set_ai_column_info(const common::ObString &value) { return deep_copy_str(value, ai_column_info_); }
+  const common::ObString &get_ai_column_info() const { return ai_column_info_; }
+  bool is_ai_column() const { return !ai_column_info_.empty(); }
+  bool is_ai_column_auxiliary() const
+  {
+    return is_hidden() && (get_column_name_str().prefix_match("__ai_state_")
+        || get_column_name_str().prefix_match("__ai_request_")
+        || get_column_name_str().prefix_match("__ai_spec_"));
+  }
+
   inline void set_table_id(const uint64_t id) { table_id_ = id; }
   inline void set_column_id(const uint64_t id) { column_id_ = id; }
   inline void set_schema_version(const int64_t schema_version) { schema_version_ = schema_version; }
@@ -398,6 +408,7 @@ private:
   ObSkipIndexColumnAttr skip_index_attr_;
   int64_t lob_chunk_size_;
   share::ObLocalSessionVar local_session_vars_;
+  common::ObString ai_column_info_;
 };
 
 inline int32_t ObColumnSchemaV2::get_data_length() const

@@ -1,0 +1,36 @@
+# owner: database-competition
+# description: Native joins, rescan, expressions and atomic COPY failures.
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_data.inc
+--disable_query_log
+let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
+set session enable_file_sql = ON;
+
+--echo # cross-format native joins
+eval select c.id,j.name from read_csv('$FILE_SQL_DATA_DIR/basic.csv') c
+     inner join read_ndjson('$FILE_SQL_DATA_DIR/basic.jsonl') j on c.id=j.id order by c.id;
+eval select /*+ use_nl(j) leading(c j) */ c.id,j.name from read_csv('$FILE_SQL_DATA_DIR/basic.csv') c
+     left join read_json('$FILE_SQL_DATA_DIR/basic.jsonl') j on c.id=j.id and j.id>1 order by c.id;
+--echo # expressions, limits and HAVING
+eval select upper(name) as n from read_csv('$FILE_SQL_DATA_DIR/basic.csv')
+     where active and score>90 order by score desc limit 2;
+eval select active,count(*) as n,sum(score) as s from read_csv('$FILE_SQL_DATA_DIR/basic.csv')
+     group by active having n>1;
+
+--echo # ordinary table COPY with custom CSV options
+create table file_sql_copy_native(id bigint, name varchar(30));
+insert into file_sql_copy_native values (1,'a,b'),(2,NULL);
+eval copy file_sql_copy_native to '$FILE_SQL_DATA_DIR/native.csv' (header, delimiter ';', nullstr 'NULL');
+eval select * from read_csv('$FILE_SQL_DATA_DIR/native.csv',delim=';',nullstr='NULL') order by id;
+--disable_result_log
+--error 1210
+eval copy file_sql_copy_native to '$FILE_SQL_DATA_DIR/native.csv' (header);
+--error 3141
+eval copy (select cast(concat('bad',id) as json) as a from read_csv('$FILE_SQL_DATA_DIR/basic.csv'))
+     to '$FILE_SQL_DATA_DIR/failed.csv' (header);
+--enable_result_log
+--echo # failed COPY publishes no file
+eval select count(*) as n from glob('$FILE_SQL_DATA_DIR/failed.csv');
+drop table file_sql_copy_native;
+set session enable_file_sql = OFF;
+--enable_query_log
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_data.inc

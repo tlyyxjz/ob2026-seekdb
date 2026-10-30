@@ -59,6 +59,7 @@ SHARE_UNITY_GROUPS = [
             "src/share/inner_table/ob_inner_table_schema.21551_21600.cpp",
             "src/share/inner_table/ob_inner_table_schema.21601_21650.cpp",
             "src/share/inner_table/ob_inner_table_schema.21651_21700.cpp",
+            "src/share/inner_table/ob_inner_table_schema.24901_24950.cpp",
             "src/share/inner_table/ob_inner_table_schema.50001_50050.cpp",
             "src/share/inner_table/ob_inner_table_schema.50101_50150.cpp",
             "src/share/inner_table/ob_inner_table_schema.51001_51050.cpp",
@@ -383,6 +384,7 @@ SHARE_UNITY_GROUPS = [
         srcs = [
             "src/share/schema/ob_col_desc.cpp",
             "src/share/schema/ob_column_schema.cpp",
+            "src/share/schema/ob_ai_column_schema.cpp",
             "src/share/schema/ob_constraint.cpp",
             "src/share/schema/ob_database_sql_service.cpp",
             "src/share/schema/ob_ddl_sql_service.cpp",

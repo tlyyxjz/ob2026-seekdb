@@ -164,6 +164,7 @@ protected:
 
   //resolve select into
   int resolve_into_clause(const ParseNode *node);
+  int resolve_file_copy_into(const ParseNode &node, ObSelectIntoItem &item);
   int resolve_into_const_node(const ParseNode *node, ObObj &obj);
   int resolve_into_field_node(const ParseNode *node, ObSelectIntoItem &into_item);
   int resolve_into_line_node(const ParseNode *node, ObSelectIntoItem &into_item);
@@ -171,9 +172,6 @@ protected:
   int resolve_into_file_node(const ParseNode *node, ObSelectIntoItem &into_item);
   int resolve_into_outfile_without_format(const ParseNode *node, ObSelectIntoItem &into_item);
   int resolve_into_outfile_with_format(const ParseNode *node, ObSelectIntoItem &into_item);
-  // COPY ( <query> ) TO '<path>' ( ... ) : the COPY dialect of the INTO clause
-  int resolve_copy_into_clause(const ParseNode *node, ObSelectIntoItem &into_item);
-  int build_copy_header_line(ObSelectIntoItem &into_item);
   // resolve_star related functions
   int resolve_star_for_table_groups();
   int find_joined_table_group_for_table(const uint64_t table_id, int64_t &jt_idx);

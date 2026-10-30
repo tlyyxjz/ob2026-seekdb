@@ -188,6 +188,7 @@ SHARE_PUBLIC_HEADER_ROOTS = [
     "schema/ob_ai_model_sql_service.h",
     "schema/ob_col_desc.h",
     "schema/ob_column_schema.h",
+    "schema/ob_ai_column_schema.h",
     "schema/ob_constraint.h",
     "schema/ob_database_sql_service.h",
     "schema/ob_ddl_sql_service.h",

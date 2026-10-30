@@ -18,6 +18,7 @@
 
 #include "config_bridge.h"
 #include "ob_sql_trans_control.h"
+#include "sql/engine/basic/ob_ai_column_runtime.h"
 #include "data_plane/tablelock/ob_table_lock.h"
 #include "data_plane/transaction/ob_deadlock.h"
 #include "data_plane/transaction/ob_lock_wait_stat.h"
@@ -653,6 +654,13 @@ int ObSqlTransControl::stmt_setup_snapshot_(ObSQLSessionInfo *session,
   ObConsistencyLevel cl = plan_ctx->get_consistency_level();
   ObTxReadSnapshot &snapshot = das_ctx.get_snapshot();
   bool can_plain_insert = false;
+  if (is_ai_column_read_check()) {
+    // Readiness and the user statement must observe the same row versions,
+    // including writes already made by the caller's transaction.
+    auto *parent = exec_ctx.get_parent_ctx();
+    if (!parent || !parent->get_das_ctx().get_snapshot().is_valid()) return OB_ERR_UNEXPECTED;
+    return snapshot.assign(parent->get_das_ctx().get_snapshot());
+  }
   if (cl == ObConsistencyLevel::WEAK || cl == ObConsistencyLevel::FROZEN) {
     SCN snapshot_version = SCN::min_scn();
     if (OB_FAIL(txs->get_weak_read_snapshot_version(session->get_ob_max_read_stale_time(),

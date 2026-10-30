@@ -203,11 +203,11 @@ public:
   int resolve_generate_table_item(ObSelectStmt *ref_query, const ObString &alias_name, TableItem *&tbl_item);
   int resolve_joined_table(const ParseNode &parse_node, JoinedTable *&joined_table);
   int resolve_joined_table_item(const ParseNode &parse_node, JoinedTable *&joined_table);
+  int resolve_file_table_item(const ParseNode &node, TableItem *&item);
+  int resolve_file_table_columns(const TableItem &table, common::ObIArray<ColumnItem> &columns);
   int resolve_function_table_item(const ParseNode &table_node,
                                   TableItem *&table_item);
   int resolve_json_table_item(const ParseNode &table_node,
-                              TableItem *&table_item);
-  int resolve_file_table_item(const ParseNode &table_node,
                               TableItem *&table_item);
   int resolve_unnest_item(const ParseNode &table_node, TableItem *&table_item);
   int create_unnest_table_item(TableItem *&table_item, ObString table_name);

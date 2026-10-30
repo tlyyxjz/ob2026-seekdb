@@ -108,11 +108,6 @@ public:
                          const uint8_t char_len,
                          const ObFTCharUtil::CharType type)
       = 0;
-
-  // Processors carry the in-flight offsets of the document being segmented. A
-  // reused parser must drop them before the next document starts, otherwise the
-  // first token of the new text is computed from the tail of the previous one.
-  virtual void reset_state() {}
 };
 
 } // namespace storage

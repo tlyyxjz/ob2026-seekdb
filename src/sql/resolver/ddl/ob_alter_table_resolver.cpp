@@ -15,6 +15,7 @@
  */
 
 #define USING_LOG_PREFIX SQL_RESV
+#include "sql/resolver/ddl/ob_ai_column_resolver.h"
 #include "config_bridge.h"
 #include "sql/resolver/ddl/ob_alter_table_resolver.h"
 #include "sql/resolver/expr/ob_raw_expr_part_expr_checker.h"
@@ -236,6 +237,7 @@ int ObAlterTableResolver::resolve(const ParseNode &parse_tree)
       }
     }
   }
+  if (OB_SUCC(ret) && table_schema_) ret = finalize_alter_ai_columns(*get_alter_table_stmt(), *table_schema_, params_);
   DEBUG_SYNC(HANG_BEFORE_RESOLVER_FINISH);
   return ret;
 }

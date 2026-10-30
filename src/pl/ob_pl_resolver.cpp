@@ -1233,7 +1233,7 @@ int ObPLResolver::build_record_type_by_table_schema(ObSchemaGetterGuard &schema_
     ObTableSchema::const_column_iterator cs_iter_end = table_schema->column_end();
     for (; OB_SUCC(ret) && cs_iter != cs_iter_end; cs_iter++) {
       const ObColumnSchemaV2 &column_schema = **cs_iter;
-      if (!column_schema.is_hidden()) {
+      if (!column_schema.is_hidden() || column_schema.is_ai_column_auxiliary()) {
         ObPLDataType pl_type;
         ObDataType data_type;
         data_type.set_meta_type(column_schema.get_meta_type());

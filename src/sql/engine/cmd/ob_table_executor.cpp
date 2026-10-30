@@ -28,6 +28,7 @@
 #include "sql/engine/cmd/ob_index_executor.h"
 #include "sql/engine/cmd/ob_ddl_executor_util.h"
 #include "sql/resolver/ddl/ob_create_table_stmt.h"
+#include "observer/ai_service/ai_column_service.h"
 #include "sql/resolver/ddl/ob_alter_table_stmt.h"
 #include "sql/resolver/ddl/ob_drop_table_stmt.h"
 #include "sql/resolver/ddl/ob_rename_table_stmt.h"
@@ -492,6 +493,9 @@ int ObCreateTableExecutor::execute(ObExecContext &ctx, ObCreateTableStmt &stmt)
       if (OB_FAIL(execute_ctas(ctx, stmt))){
       }
     }
+    if (OB_SUCC(ret) && res.table_id_ != OB_INVALID_ID && !res.do_nothing_) {
+      ret = observer::AiColumnService::instance().install_table(res.table_id_, true);
+    }
     SERVER_EVENT_ADD("ddl", "create table execute finish",
       "ret", ret,
       "trace_id", *ObCurTraceId::get_trace_id(),
@@ -871,6 +875,9 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
     snprintf(table_info_buffer, sizeof(table_info_buffer), "table_id:%ld, hidden_table_id:%ld", 
               alter_table_arg.table_id_, alter_table_arg.hidden_table_id_);
 
+    if (OB_SUCC(ret)) {
+      ret = observer::AiColumnService::instance().install_table(stmt.get_alter_table_schema().get_table_id(), true);
+    }
     SERVER_EVENT_ADD("ddl", "alter table execute finish",
       "ret", ret,
       "trace_id", *ObCurTraceId::get_trace_id(),

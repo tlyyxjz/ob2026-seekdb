@@ -1,0 +1,22 @@
+# cross-format native joins
+id	name
+1	Alice
+2	Bob
+3	Chen
+id	name
+1	NULL
+2	Bob
+3	Chen
+# expressions, limits and HAVING
+n
+ALICE
+CHEN
+active	n	s
+1	2	188.75
+# ordinary table COPY with custom CSV options
+id	name
+1	a,b
+2	NULL
+# failed COPY publishes no file
+n
+0

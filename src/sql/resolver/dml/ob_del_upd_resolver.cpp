@@ -518,6 +518,11 @@ int ObDelUpdResolver::resolve_additional_assignments(ObIArray<ObTableAssignment>
                                                                  assigns.at(i).assignments_,
                                                                  update_with_vector_index))) {
     } else {
+      // A BEFORE trigger may change a vector that was absent from the user's
+      // assignment list. Refresh its VID as for an explicit vector update.
+      if (trigger_exist && !update_with_vector_index) {
+        ret = ObVectorIndexUtil::check_table_has_vector_index(*table_schema, *schema_guard, update_with_vector_index);
+      }
       for (ObTableSchema::const_column_iterator iter = table_schema->column_begin();
           (OB_SUCCESS == ret && iter != table_schema->column_end()); ++iter) {
         ColumnItem *col_item = NULL;

@@ -15,6 +15,8 @@
  */
 
 #define USING_LOG_PREFIX SHARE_SCHEMA
+#include "share/schema/ob_ai_column_schema.h"
+#include "common/mysqlclient/ob_mysql_transaction.h"
 #include "sql/printer/ob_schema_printer.h"
 #include "share/ob_autoincrement_service.h"
 #include "sql/resolver/expr/ob_raw_expr_util.h"
@@ -207,6 +209,14 @@ int ObSchemaPrinter::print_table_definition_columns(const ObTableSchema &table_s
         if (OB_SUCC(ret) && col->is_invisible_column()) {
           if (OB_FAIL(databuff_printf(buf, buf_len, pos, " INVISIBLE"))) {
           }
+        }
+        if (OB_SUCC(ret) && col->is_ai_column()) {
+          try {
+            const auto definition = share::schema::ai_column::Definition::deserialize(
+                std::string(col->get_ai_column_info().ptr(), col->get_ai_column_info().length()));
+            ret = databuff_printf(buf, buf_len, pos, " AI COLUMN (%s) WITH (sync_mode='async', max_retries=%ld)",
+                definition.expression.c_str(), definition.max_retries);
+          } catch (const std::exception &) { ret = OB_ERR_UNEXPECTED; }
         }
         if (OB_SUCC(ret) && col->is_generated_column()) {
           if (OB_FAIL(print_generated_column_definition(*col, buf, buf_len, table_schema, pos))) {

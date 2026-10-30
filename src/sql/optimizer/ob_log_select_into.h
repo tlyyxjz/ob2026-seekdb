@@ -33,7 +33,6 @@ public:
       : ObLogicalOperator(plan),
         into_type_(T_INTO_OUTFILE),
         outfile_name_(),
-        header_line_(),
         field_str_(),
         line_str_(),
         user_vars_(),
@@ -56,10 +55,6 @@ public:
   inline void set_outfile_name(common::ObObj &name_str)
   {
     outfile_name_ = name_str;
-  }
-  inline void set_header_line(common::ObObj &header_line)
-  {
-    header_line_ = header_line;
   }
   inline void set_field_str(common::ObObj &field_str)
   {
@@ -121,10 +116,6 @@ public:
   {
     return outfile_name_;
   }
-  inline common::ObObj get_header_line() const
-  {
-    return header_line_;
-  }
   inline common::ObObj get_field_str() const
   {
     return field_str_;
@@ -184,7 +175,6 @@ public:
 private:
   ObItemType into_type_;
   common::ObObj outfile_name_;
-  common::ObObj header_line_;
   common::ObObj field_str_;
   common::ObObj line_str_;
   common::ObSEArray<ObRawExpr*, 8, common::ModulePageAllocator, true> select_exprs_;
