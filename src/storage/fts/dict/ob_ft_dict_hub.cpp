@@ -43,6 +43,16 @@ int ObFTDictHub::init()
 int ObFTDictHub::destroy()
 {
   int ret = OB_SUCCESS;
+  // The dict cache has already been destroyed at this point, so the kept cache
+  // handles must not be released. Only the dict objects are destroyed here.
+  for (int64_t i = 1; OB_SUCC(ret) && i < MAX_SHARED_DICT_NUM; ++i) {
+    if (OB_NOT_NULL(shared_dicts_[i].dict_)) {
+      shared_dicts_[i].dict_->~ObIFTDict();
+      shared_dicts_[i].dict_ = nullptr;
+    }
+  }
+  shared_dict_alloc_.reset();
+  dict_map_.destroy();
   is_inited_ = false;
   return ret;
 }
@@ -50,34 +60,41 @@ int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &
 {
   int ret = OB_SUCCESS;
   ObFTDictInfoKey key(static_cast<uint64_t>(desc.type_));
-  ObFTDictInfo info;
   container.reset();
 
   if (!is_inited_) {
     ret = OB_NOT_INIT;
   } else {
     ObBucketHashWLockGuard guard(rw_dict_lock_, key.hash());
+    ret = build_cache_inner(desc, container);
+  }
+  return ret;
+}
 
-    // try if valid with no recursive lock
-    if (OB_FAIL(get_dict_info(key, info))) {
-      if (OB_HASH_NOT_EXIST == ret) {
-        // dict not exist, make new one, by caller
-        ret = OB_ENTRY_NOT_EXIST;
-      } else {
-      }
-    } else if (OB_FAIL(ObFTRangeDict::try_load_cache(desc, info.range_count_, container))) {
-      if (OB_ENTRY_NOT_EXIST == ret) {
-      } else {
-      }
+int ObFTDictHub::build_cache_inner(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)
+{
+  int ret = OB_SUCCESS;
+  ObFTDictInfoKey key(static_cast<uint64_t>(desc.type_));
+  ObFTDictInfo info;
+
+  // try if valid with no recursive lock
+  if (OB_FAIL(get_dict_info(key, info))) {
+    if (OB_HASH_NOT_EXIST == ret) {
+      // dict not exist, make new one, by caller
+      ret = OB_ENTRY_NOT_EXIST;
+    } else {
     }
+  } else if (OB_FAIL(ObFTRangeDict::try_load_cache(desc, info.range_count_, container))) {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+    } else {
+    }
+  }
 
-    if (OB_FAIL(ret)) {
-      if (OB_ENTRY_NOT_EXIST == ret) {
-        if (OB_FAIL(ObFTRangeDict::build_cache_from_ik_dict(desc, container))) {
-        } else if (FALSE_IT(info.range_count_ = container.get_handles().size())) {
-        } else if (OB_FAIL(put_dict_info(key, info))) {
-        }
-      }
+  if (OB_ENTRY_NOT_EXIST == ret) {
+    ret = OB_SUCCESS;
+    if (OB_FAIL(ObFTRangeDict::build_cache_from_ik_dict(desc, container))) {
+    } else if (FALSE_IT(info.range_count_ = container.get_handles().size())) {
+    } else if (OB_FAIL(put_dict_info(key, info))) {
     }
   }
   return ret;
@@ -86,31 +103,99 @@ int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &
 int ObFTDictHub::load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)
 {
   int ret = OB_SUCCESS;
-  ObFTDictInfo info;
-  container.reset();
   ObFTDictInfoKey key(static_cast<uint64_t>(desc.type_));
+  container.reset();
   if (!is_inited_) {
     ret = OB_NOT_INIT;
   } else {
+    ObBucketHashRLockGuard guard(rw_dict_lock_, key.hash());
+    ret = load_cache_inner(desc, container);
+  }
+
+  return ret;
+}
+
+int ObFTDictHub::load_cache_inner(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)
+{
+  int ret = OB_SUCCESS;
+  ObFTDictInfo info;
+  ObFTDictInfoKey key(static_cast<uint64_t>(desc.type_));
+
+  if (OB_FAIL(get_dict_info(key, info))) {
+    if (OB_HASH_NOT_EXIST == ret) {
+      // dict not exist, make new one, by caller
+      ret = OB_ENTRY_NOT_EXIST;
+    } else {
+    }
+  } else if (OB_FAIL(ObFTRangeDict::try_load_cache(desc, info.range_count_, container))) {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      // dict not exist, make new one, by caller
+    } else {
+    }
+  }
+
+  return ret;
+}
+
+int ObFTDictHub::get_shared_dict(const ObFTDictDesc &desc, ObIFTDict *&dict)
+{
+  int ret = OB_SUCCESS;
+  dict = nullptr;
+  ObFTDictInfoKey key(static_cast<uint64_t>(desc.type_));
+  const int64_t idx = static_cast<int64_t>(desc.type_);
+
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+  } else if (OB_UNLIKELY(idx <= 0 || idx >= MAX_SHARED_DICT_NUM)) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
     {
       ObBucketHashRLockGuard guard(rw_dict_lock_, key.hash());
-      if (OB_FAIL(get_dict_info(key, info))) {
-        if (OB_HASH_NOT_EXIST == ret) {
-          // dict not exist, make new one, by caller
-          ret = OB_ENTRY_NOT_EXIST;
-        } else {
-        }
+      dict = shared_dicts_[idx].dict_;
+    }
+    if (OB_ISNULL(dict)) {
+      ObBucketHashWLockGuard guard(rw_dict_lock_, key.hash());
+      if (OB_NOT_NULL(shared_dicts_[idx].dict_)) {
+        dict = shared_dicts_[idx].dict_;
+      } else if (OB_FAIL(build_shared_dict(desc, idx, dict))) {
       }
     }
-    if (OB_FAIL(ret)) {
-    } else if (OB_FAIL(ObFTRangeDict::try_load_cache(desc, info.range_count_, container))) {
-      if (OB_ENTRY_NOT_EXIST == ret) {
-        // dict not exist, make new one, by caller
-      } else {
+  }
+  return ret;
+}
+
+int ObFTDictHub::build_shared_dict(const ObFTDictDesc &desc,
+                                   const int64_t idx,
+                                   ObIFTDict *&dict)
+{
+  int ret = OB_SUCCESS;
+  ObFTCacheRangeContainer *container = nullptr;
+  ObFTRangeDict *range_dict = nullptr;
+
+  if (OB_ISNULL(container = OB_NEWx(ObFTCacheRangeContainer, &shared_dict_alloc_, shared_dict_alloc_))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(load_cache_inner(desc, *container))) {
+    if (OB_ENTRY_NOT_EXIST == ret) {
+      ret = OB_SUCCESS;
+      if (OB_FAIL(build_cache_inner(desc, *container))) {
       }
     }
   }
 
+  if (OB_FAIL(ret)) {
+  } else if (OB_ISNULL(range_dict = OB_NEWx(ObFTRangeDict,
+                                             &shared_dict_alloc_,
+                                             shared_dict_alloc_,
+                                             container,
+                                             desc))) {
+    ret = OB_ALLOCATE_MEMORY_FAILED;
+  } else if (OB_FAIL(range_dict->init())) {
+  } else {
+    shared_dicts_[idx].container_ = container;
+    shared_dicts_[idx].dict_ = range_dict;
+    dict = range_dict;
+    LOG_INFO("build shared fulltext dict", K(desc.type_), "range_count", container->get_handles().size());
+  }
   return ret;
 }
 

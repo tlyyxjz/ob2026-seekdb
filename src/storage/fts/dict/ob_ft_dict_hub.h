@@ -17,6 +17,7 @@
 #ifndef _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 
+#include "lib/allocator/page_arena.h"
 #include "lib/charset/ob_charset.h"
 #include "lib/lock/ob_bucket_lock.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
@@ -93,10 +94,17 @@ private:
 };
 
 class ObFTCacheRangeContainer;
+class ObIFTDict;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
+  ObFTDictHub()
+      : is_inited_(false),
+        dict_map_(),
+        rw_dict_lock_(),
+        shared_dict_alloc_(lib::ObMemAttr("IK Shared Dict"))
+  {
+  }
   ~ObFTDictHub() {}
 
   int init();
@@ -107,17 +115,40 @@ public:
 
   int load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
 
+  /**
+   * Get the shared dict of the descriptor, which is built on first use and then
+   * reused by all tokenizer instances. It avoids loading the dict ranges and
+   * rebuilding the range dict for every document.
+   */
+  int get_shared_dict(const ObFTDictDesc &desc, ObIFTDict *&dict);
+
 private:
   int get_dict_info(const ObFTDictInfoKey &key, ObFTDictInfo &info);
 
   int put_dict_info(const ObFTDictInfoKey &key, const ObFTDictInfo &info);
 
+  int load_cache_inner(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+
+  int build_cache_inner(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+
+  int build_shared_dict(const ObFTDictDesc &desc, const int64_t idx, ObIFTDict *&dict);
+
+private:
+  static constexpr int64_t MAX_SHARED_DICT_NUM = 4; // DICT_TYPE_INVALID ~ DICT_IK_STOP
+  struct ObFTSharedDict final
+  {
+    ObFTCacheRangeContainer *container_ = nullptr;
+    ObIFTDict *dict_ = nullptr;
+  };
 
 private:
   bool is_inited_;
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  // pin the dict cache ranges once, so that shared dicts stay valid
+  ObFTSharedDict shared_dicts_[MAX_SHARED_DICT_NUM];
+  ObArenaAllocator shared_dict_alloc_;
 };
 
 } //  namespace storage
