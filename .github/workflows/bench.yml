@@ -45,11 +45,32 @@ jobs:
     - name: Start seekdb for benchmark
       shell: bash
       run: |
-        set -euo pipefail
-        python3 .github/script/seekdb/bench_runner.py \
-          --seekdb build_release/src/observer/seekdb \
-          --obclient deps/3rd/u01/obclient/bin/obclient \
-          --base-dir "$GITHUB_WORKSPACE/bench_out/instance"
+        set -uo pipefail
+        sudo sysctl -w kernel.core_pattern=/tmp/core.%p >/dev/null 2>&1 || true
+        ulimit -c unlimited || true
+        echo "core_pattern=$(cat /proc/sys/kernel/core_pattern) ulimit_c=$(ulimit -c)"
+        # The bootstrap loads the corpus, and it sometimes exceeds the client timeout on
+        # ANALYZE TABLE __ALL_VIRTUAL_CORE_ALL_TABLE (ERROR 4012) on this runner. That is
+        # runner I/O, not the code under test, so retry the whole bootstrap (it destroys
+        # and re-creates the instance first) instead of burning a 45 minute build on it.
+        ok=0
+        for attempt in 1 2 3; do
+          echo "=== bootstrap attempt ${attempt} ==="
+          if python3 .github/script/seekdb/bench_runner.py \
+               --seekdb build_release/src/observer/seekdb \
+               --obclient deps/3rd/u01/obclient/bin/obclient \
+               --base-dir "$GITHUB_WORKSPACE/bench_out/instance"; then
+            ok=1
+            break
+          fi
+          echo "=== bootstrap attempt ${attempt} failed ==="
+          python3 .github/script/seekdb/sdb.py stop \
+            --base-dir "$GITHUB_WORKSPACE/bench_out/instance" >/dev/null 2>&1 || true
+        done
+        if [ "$ok" != "1" ]; then
+          echo "bootstrap failed on all attempts"
+          exit 1
+        fi
 
     - name: Run fts benchmark
       shell: bash
@@ -61,6 +82,64 @@ jobs:
         MYSQL_VERBOSE="$CLIENT -h127.0.0.1 -P2881 -uroot --default-character-set=utf8mb4" \
         OUTPUT="$GITHUB_WORKSPACE/bench_out/report.txt" \
         bash tools/benchmark/fts_large_bench.sh 2>&1 | tee bench.log
+
+    - name: Dump observer diagnostics
+      if: failure()
+      shell: bash
+      run: |
+        LOGDIR="$GITHUB_WORKSPACE/bench_out/instance/log"
+        echo "=== log dir ==="
+        ls -la "$LOGDIR" 2>&1 || true
+        for f in "$LOGDIR"/*.log*; do
+          [ -f "$f" ] || continue
+          echo "=== $f : $(wc -l < "$f") lines ==="
+          grep -nE "SIGSEGV|SIGABRT|SIGBUS|ASSERT|assert fail|backtrace|errcode=-4[0-9]{3}|\] ERROR |FATAL" "$f" | tail -40 || true
+          echo "--- tail 40 ---"
+          tail -40 "$f" | cut -c1-260 || true
+        done
+        echo "=== cores ==="
+        ls -la /tmp/core.* 2>/dev/null || echo "no core file"
+        echo "=== core header (signal, no debugger needed) ==="
+        for c in /tmp/core.*; do
+          [ -f "$c" ] || continue
+          file "$c" || true
+          break
+        done
+        echo "=== gdb ==="
+        if ! command -v gdb >/dev/null 2>&1; then
+          echo "--- apt update ---"
+          sudo apt-get update 2>&1 | tail -5 || true
+          echo "--- apt install (backports first: the runner holds elfutils 0.188 from backports) ---"
+          sudo apt-get install -y --no-install-recommends -t jammy-backports gdb 2>&1 | tail -8 || true
+          if ! command -v gdb >/dev/null 2>&1; then
+            echo "--- fallback: align elfutils down to the archive version ---"
+            sudo apt-get install -y --no-install-recommends --allow-downgrades \
+              libelf1=0.186-1build1 libdw1=0.186-1build1 gdb 2>&1 | tail -8 || true
+          fi
+        fi
+        echo "--- which ---"
+        ls -la /usr/bin/gdb* 2>/dev/null || echo "no /usr/bin/gdb"
+        command -v gdb || echo "gdb unavailable"
+        command -v lldb || echo "lldb unavailable"
+        file build_release/src/observer/seekdb | cut -c1-200
+        echo "=== stack ==="
+        for c in /tmp/core.*; do
+          [ -f "$c" ] || continue
+          if command -v gdb >/dev/null 2>&1; then
+            gdb -batch -nx -iex "set pagination off" -iex "set print frame-arguments none" \
+              -ex "thread apply all bt 25" \
+              -ex "bt 60" \
+              build_release/src/observer/seekdb "$c" 2>&1 | tail -200 || true
+          elif command -v lldb >/dev/null 2>&1; then
+            lldb -c "$c" --batch -o "thread backtrace all" -o "bt 60" \
+              build_release/src/observer/seekdb 2>&1 | tail -200 || true
+          else
+            echo "no debugger available"
+          fi
+          break
+        done
+        echo "=== kernel ==="
+        dmesg 2>/dev/null | tail -15 || true
 
     - name: Score against the checked-in baseline
       if: always()
@@ -89,4 +168,5 @@ jobs:
           bench.log
           bench_out/report.txt
           bench_out/score.txt
+          bench_out/instance/log/*.log
         if-no-files-found: warn
