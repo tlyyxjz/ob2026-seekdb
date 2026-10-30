@@ -32,9 +32,21 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
+  /* NN-Descent work per iteration scales with intermediate_graph_degree, so the
+   * V5 contest baseline's 256 is the dominant build cost knob.  cuVS documents
+   * 1.5x-2x of graph_degree as good practice (and a multiple of 32); with
+   * graph_degree pinned at 128 that puts 256 at the top of the recommended
+   * band.  Take the documented lower bound instead: 192 is still 1.5x, still a
+   * multiple of 32, and cuts per-iteration candidate work by 25% without
+   * touching graph_degree, which is what governs steady-state recall.
+   *
+   * nn_descent_niter stays at 100 on purpose.  NN-Descent already terminates
+   * early once update_counter < termination_threshold * nrow * node_degree
+   * (default threshold 0.001), so lowering the cap cannot save time on a graph
+   * that has already converged - it only risks stopping one that has not. */
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
+  h->ip->intermediate_graph_degree = 192;
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
