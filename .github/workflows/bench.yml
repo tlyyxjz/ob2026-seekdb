@@ -83,6 +83,35 @@ jobs:
         OUTPUT="$GITHUB_WORKSPACE/bench_out/report.txt" \
         bash tools/benchmark/fts_large_bench.sh 2>&1 | tee bench.log
 
+    - name: Query decomposition probe
+      shell: bash
+      run: |
+        set -uo pipefail
+        CLIENT="$GITHUB_WORKSPACE/deps/3rd/u01/obclient/bin/obclient"
+        q() {
+          local name="$1" sql="$2" s e
+          s=$(date +%s%N)
+          "$CLIENT" -h127.0.0.1 -P2881 -uroot -N -s --default-character-set=utf8mb4 \
+            -e "SET NAMES utf8mb4; $sql" >/dev/null 2>&1
+          e=$(date +%s%N)
+          echo "probe ${name}: $(( (e-s)/1000 )) us"
+        }
+        for i in 1 2 3 4 5; do q floor "SELECT 1"; done
+        for i in 1 2 3; do
+          q cnt_two_cols "SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器')"
+          q cnt_one_col "SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(content) AGAINST('全文索引 分词器')"
+          q cnt_one_tok "SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引')"
+          q cnt_plain "SELECT COUNT(*) FROM fts_large_bench.docs"
+          q lim20 "SELECT COUNT(*) FROM (SELECT id FROM fts_large_bench.docs WHERE MATCH(content) AGAINST('倒排索引 tokenizer') LIMIT 20) t"
+        done
+        echo "=== explain ==="
+        "$CLIENT" -h127.0.0.1 -P2881 -uroot -e "EXPLAIN SELECT COUNT(*) FROM fts_large_bench.docs WHERE MATCH(title, content) AGAINST('全文索引 分词器')" 2>&1 | head -30
+        echo "=== units ==="
+        "$CLIENT" -h127.0.0.1 -P2881 -uroot -e "SELECT SVR_IP, CPU_CAPACITY, CPU_CAPACITY_MAX FROM oceanbase.GV\$OB_UNITS" 2>&1 | head -10
+        echo "=== parallel vars ==="
+        "$CLIENT" -h127.0.0.1 -P2881 -uroot -e "SHOW VARIABLES LIKE '%parallel%'" 2>&1 | head -20
+        echo "nproc=$(nproc)"
+
     - name: Dump observer diagnostics
       if: failure()
       shell: bash
