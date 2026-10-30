@@ -62,6 +62,42 @@ public:
                                  const uint8_t char_len,
                                  bool &is_connector);
 
+  // ASCII fast path: single-byte UTF8MB4 characters (always below 0x80) are
+  // classified without unicode decoding; identical semantics to the general
+  // unicode range checks for these code points.
+  static bool classify_ascii(const char input, CharType &type)
+  {
+    const unsigned char c = static_cast<unsigned char>(input);
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+      type = CharType::ENGLISH_LETTER;
+    } else if (c >= '0' && c <= '9') {
+      type = CharType::ARABIC_LETTER;
+    } else if (c >= 0x80) {
+      return false;
+    } else {
+      type = CharType::USELESS;
+    }
+    return true;
+  }
+
+  static bool is_ascii_letter_connector(const char input)
+  {
+    switch (input) {
+    case '#':
+    case '&':
+    case '+':
+    case '-':
+    case '.':
+    case '@':
+    case '_':
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  static bool is_ascii_num_connector(const char input) { return input == ',' || input == '.'; }
+
   static int check_letter_connector(ObCollationType coll_type,
                                     const char *input,
                                     const uint8_t char_len,
@@ -366,6 +402,11 @@ inline int ObFTCharUtil::check_cn_number(ObCollationType coll_type,
   int ret = OB_SUCCESS;
   ObCharsetType cs_type = ObCharset::charset_type_by_coll(coll_type);
 
+  if (char_len == 1 && cs_type == CHARSET_UTF8MB4) {
+    is_cn_number = false;
+    return OB_SUCCESS;
+  }
+
   switch (cs_type) {
   case CHARSET_UTF8MB4: {
     ret = ObFTCharUtil::is_cn_number<CHARSET_UTF8MB4>(input, char_len, is_cn_number);
@@ -386,6 +427,11 @@ inline int ObFTCharUtil::check_num_connector(ObCollationType coll_type,
   int ret = OB_SUCCESS;
   ObCharsetType cs_type = ObCharset::charset_type_by_coll(coll_type);
 
+  if (char_len == 1 && cs_type == CHARSET_UTF8MB4) {
+    is_connector = is_ascii_num_connector(*input);
+    return OB_SUCCESS;
+  }
+
   switch (cs_type) {
   case CHARSET_UTF8MB4: {
     ret = ObFTCharUtil::is_num_connector<CHARSET_UTF8MB4>(input, char_len, is_connector);
@@ -405,6 +451,11 @@ inline int ObFTCharUtil::check_letter_connector(ObCollationType coll_type,
 {
   int ret = OB_SUCCESS;
   ObCharsetType cs_type = ObCharset::charset_type_by_coll(coll_type);
+
+  if (char_len == 1 && cs_type == CHARSET_UTF8MB4) {
+    is_connector = is_ascii_letter_connector(*input);
+    return OB_SUCCESS;
+  }
 
   switch (cs_type) {
   case CHARSET_UTF8MB4: {
@@ -427,6 +478,11 @@ inline int ObFTCharUtil::is_ignore_single_cjk(ObCollationType coll_type,
 {
   int ret = OB_SUCCESS;
   ObCharsetType cs_type = ObCharset::charset_type_by_coll(coll_type);
+
+  if (char_len == 1 && cs_type == CHARSET_UTF8MB4) {
+    ignore = false;
+    return OB_SUCCESS;
+  }
 
   switch (cs_type) {
   case CHARSET_UTF8MB4: {
@@ -476,6 +532,11 @@ inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
 {
   int ret = OB_SUCCESS;
   ObCharsetType cs_type = ObCharset::charset_type_by_coll(coll_type);
+
+  if (char_len == 1 && cs_type == CHARSET_UTF8MB4) {
+    classify_ascii(*input, type);
+    return OB_SUCCESS;
+  }
 
   switch (cs_type) {
   case CHARSET_UTF8MB4: {
