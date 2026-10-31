@@ -110,8 +110,17 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     nt=qt; nt.dl_tensor.data=h->ndv; nt.dl_tensor.dtype.code=kDLUInt; nt.dl_tensor.shape=nsh;
     dt=qt; dt.dl_tensor.data=h->ddv; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      /* v6 cut BOTH of these at once (itopk 128, width 2) and lost
+       * hidden250k:recall@10 on all three gates. Width is the one that decides
+       * how many candidates are expanded per iteration, so it is the likely
+       * culprit; itopk only sizes the queue that holds them. This keeps width at
+       * the baseline's 4 and moves itopk alone.
+       *
+       * 512 for topk=100 is 5x the queue CAGRA actually needs (its own default
+       * itopk is 64); 128 still holds 1.28x topk, so the returned top-k is
+       * unaffected in the easy case and only the long tail can move. */
+      size_t required_itopk = (size_t)topk + 32;
+      if (required_itopk < 128) required_itopk = 128;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }
