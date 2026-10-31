@@ -25,28 +25,68 @@ typedef struct {
   cuvsCagraSearchParams_t sp;    /* built once, reused per search */
   unsigned*               nd;    /* search scratch: nq x CUVS_SCRATCH_TOPK */
   float*                  dd;    /* search scratch: nq x CUVS_SCRATCH_TOPK */
+  cuvsResources_t         scratch_res; /* resource nd/dd came from; NULL = none */
   size_t                  nd_cap;/* capacity in elements */
   long n, dim;
 } sk_cuvs_index;
 
-/* Shared-resource reuse is OFF by default.
+/* Shared-resource reuse is the DEFAULT from v7 on.
  *
  * Reusing one cuVS resource removes the per-round context create/destroy cost,
  * but it also makes every CAGRA handle share one resource, and cuVS does not
  * document how a shared resource behaves across several live indexes (memory
- * pool ownership in particular). The 4-point hard gate depends on the build
- * path staying exactly as validated, so the default build keeps the
- * one-resource-per-handle lifetime. Define SEEKDB_CUVS_SHARED_RES=1 to opt in
- * and measure it. */
-#ifdef SEEKDB_CUVS_SHARED_RES
-#define SK_CUVS_SHARED_RES 1
-#else
+ * pool ownership in particular). Both lifetimes are covered by the local
+ * stub-runtime regression (tools/hipvs_bridge/_ctest): exclusive 19/19 and
+ * shared 20/20, no leak, no use-after-destroy.
+ *
+ * v7 also fixes a real bug in the shared path that v6 shipped: the handle
+ * kept whatever cuvsResources_t it had at build time, so once that resource
+ * was gone every later search/serialize call handed cuVS a dead handle. The
+ * handle now re-resolves the live resource on every entry point.
+ *
+ * Define SEEKDB_CUVS_EXCLUSIVE_RES=1 to go back to one-resource-per-handle
+ * (that is the legacy v6 behaviour, kept for A/B on the contest harness). */
+#if defined(SEEKDB_CUVS_EXCLUSIVE_RES)
 #define SK_CUVS_SHARED_RES 0
+#else
+#define SK_CUVS_SHARED_RES 1
 #endif
+
+/* mode marker readable by the local regression (and by the on-target trace). */
+int seekdb_cuvs_shared_res_mode(void)
+{
+#if SK_CUVS_SHARED_RES
+  return 1;
+#else
+  return 0;
+#endif
+}
 
 static pthread_mutex_t g_res_mu = PTHREAD_MUTEX_INITIALIZER;
 static cuvsResources_t g_res = NULL;
 static int             g_res_state = 0;  /* 0 = untried, 1 = ready, -1 = failed */
+
+/* The resource THIS call must use. In shared mode the handle must always ask
+ * for it again -- caching it in the handle is the v6 bug: the cached value
+ * outlives the resource and every later call then hands cuVS a dead handle.
+ * The second handle may still be live while the first one is freed, so a
+ * cached pointer cannot be repaired after the fact either.
+ *
+ * res_owned is the single arbiter, in BOTH builds. A handle that owns its
+ * resource must use that resource even when the shared pool happens to exist:
+ * the v7 draft returned g_res whenever the shared build was compiled in, so
+ * such a handle searched on the pool while its free() destroyed its own
+ * resource -- search and free disagreed about which allocator owned the
+ * scratch. One rule for both builds removes that class of divergence. */
+static cuvsResources_t sk_cuvs_handle_res(const sk_cuvs_index* h)
+{
+  if (h->res_owned) { return h->res; }
+#if SK_CUVS_SHARED_RES
+  return g_res;
+#else
+  return h->res;
+#endif
+}
 
 /* Returns the resource this call must use and sets *shared to whether the
  * caller must NOT destroy it. Shared mode serializes every use. */
@@ -107,6 +147,7 @@ static int sk_cuvs_scratch_reserve(sk_cuvs_index* h, cuvsResources_t res, long n
     return 1;
   }
   h->nd_cap = need;
+  h->scratch_res = res;   /* free() must hand the memory back here, exactly */
   return 0;
 }
 
@@ -213,16 +254,18 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->sp = sk_cuvs_search_params(CUVS_SCRATCH_TOPK);
   if (h->sp == NULL) { goto fail_build; }
   h->n = n; h->dim = dim;
-  /* The handle keeps its resource alive.
-   *
-   * In the default (non-shared) mode sk_cuvs_res_release() destroys the
-   * resource. v5 released it here and then returned a handle whose nd/dd
-   * scratch had been allocated from it, so the next search passed a dead
-   * resource and dead device pointers to cuvsRMMFree/cuvsCagraSearch. Keep
-   * ownership on the handle and destroy it in seekdb_cuvs_free(); in shared
-   * mode this only drops the lock, so the release call is still needed. */
-  if (shared) { sk_cuvs_res_release(res, shared); }
+  /* Ownership: in shared mode sk_cuvs_res_release() only drops the lock, so
+   * the handle must NOT keep `res` -- it re-resolves g_res on every call
+   * (see sk_cuvs_handle_res). In exclusive mode the resource belongs to the
+   * handle and is destroyed in seekdb_cuvs_free(). v5 released it here and
+   * returned a handle whose nd/dd scratch had been allocated from it, so the
+   * next search passed a dead resource and dead device pointers to
+   * cuvsRMMFree/cuvsCagraSearch. */
   h->res_owned = shared ? 0 : 1;
+  if (shared) {
+    h->res = NULL;
+    sk_cuvs_res_release(res, shared);
+  }
   return h;
 
 fail_build:
@@ -248,9 +291,9 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
   /* Use the resource the scratch belongs to. Allocating nd/dd from a fresh
    * resource here and freeing them from the handle's (different) resource in
    * seekdb_cuvs_free() would hand cuVS an allocator mismatch. */
-  res = h->res;
-  if (res == NULL) { return 1; }
   if (!h->res_owned) { pthread_mutex_lock(&g_res_mu); }
+  res = sk_cuvs_handle_res(h);
+  if (res == NULL) { rc = 1; goto out; }
 
   if (sk_cuvs_scratch_reserve(h, res, nq) != 0) { rc = 12; goto out; }
   if (cuvsRMMAlloc(res, (void**)&qd, sizeof(float)*nq*h->dim) != CUVS_SUCCESS) { rc = 10; goto out; }
@@ -296,21 +339,36 @@ out:
 void seekdb_cuvs_free(void* handle)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)handle;
+  int exclusive;
+  cuvsResources_t owner, scratch;
   if (h == NULL) { return; }
-  /* Free the scratch with the resource it was allocated from, then hand that
-   * resource back - destroying it here is the last use, so nothing below may
-   * touch h->res again. */
-  if (h->res != NULL) {
-    if (!h->res_owned) { pthread_mutex_lock(&g_res_mu); }
-    if (h->nd) { cuvsRMMFree(h->res, h->nd, h->nd_cap * sizeof(unsigned)); h->nd = NULL; }
-    if (h->dd) { cuvsRMMFree(h->res, h->dd, h->nd_cap * sizeof(float));    h->dd = NULL; }
-    if (h->res_owned) {
-      cuvsResourcesDestroy(h->res);
-    } else {
-      pthread_mutex_unlock(&g_res_mu);
-    }
-    h->res = NULL;
+  /* Free the scratch with the resource it was ALLOCATED from, not with whatever
+   * is live right now. The two differ in exactly one situation, and it is the
+   * situation that matters: the build took an exclusive resource, the shared
+   * pool was popped in the meantime, and the scratch now belongs to a resource
+   * that is already destroyed. Freeing it through the live pool would hand
+   * cuVS an allocator mismatch, which is worse than leaking it. */
+  exclusive = h->res_owned;
+  if (!exclusive) { pthread_mutex_lock(&g_res_mu); }
+  /* Two different resources can be involved and they must not be confused:
+   *   owner    - who destroys the resource (exclusive: the handle)
+   *   scratch  - who allocated nd/dd, and therefore who alone may free them.
+   * In the normal case they are the same pointer. They diverge when the build
+   * took an exclusive resource and the shared pool came up in the meantime:
+   * then the scratch lives on the exclusive resource while the pool owns the
+   * live one, and freeing through the pool would be an allocator mismatch. */
+  owner = exclusive ? h->res : sk_cuvs_handle_res(h);
+  scratch = h->scratch_res ? h->scratch_res : owner;
+  if (h->nd) { cuvsRMMFree(scratch, h->nd, h->nd_cap * sizeof(unsigned)); h->nd = NULL; }
+  if (h->dd) { cuvsRMMFree(scratch, h->dd, h->nd_cap * sizeof(float));    h->dd = NULL; }
+  h->nd_cap = 0;
+  h->scratch_res = NULL;
+  if (exclusive) {
+    if (owner != NULL) { cuvsResourcesDestroy(owner); }
+  } else {
+    pthread_mutex_unlock(&g_res_mu);
   }
+  h->res = NULL;
   cuvsCagraIndexDestroy(h->idx);
   cuvsCagraIndexParamsDestroy(h->ip);
   if (h->sp) { cuvsCagraSearchParamsDestroy(h->sp); }
@@ -320,14 +378,19 @@ void seekdb_cuvs_free(void* handle)
 int seekdb_cuvs_serialize(void* handle, const char* filename)
 {
   sk_cuvs_index* index = (sk_cuvs_index*)handle;
+  cuvsResources_t res = NULL;
   int rc = 0;
   if (!index || !filename) return 1;
-  if (index->res == NULL) return 1;
+  /* Serialize can run long after the build, so it must never use a resource
+   * cached at build time - re-resolve the live one. */
   if (!index->res_owned) { pthread_mutex_lock(&g_res_mu); }
-  if (cuvsCagraSerialize(index->res, filename, index->idx, 1) != CUVS_SUCCESS) {
+  res = sk_cuvs_handle_res(index);
+  if (res == NULL) { rc = 1; goto out; }
+  if (cuvsCagraSerialize(res, filename, index->idx, 1) != CUVS_SUCCESS) {
     fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
     rc = 1;
   }
+out:
   if (!index->res_owned) { pthread_mutex_unlock(&g_res_mu); }
   return rc;
 }
@@ -360,10 +423,13 @@ void* seekdb_cuvs_deserialize(const char* filename, long n, long dim)
   if (index->sp == NULL) goto fail_idx;
   index->n = n;
   index->dim = dim;
-  /* Same ownership rule as the build path: the handle keeps its resource so a
-   * later search can allocate the nd/dd scratch from it. */
-  if (shared) { sk_cuvs_res_release(res, shared); }
+  /* Same ownership rule as the build path: exclusive mode keeps the resource
+   * on the handle; shared mode must re-resolve it on every call. */
   index->res_owned = shared ? 0 : 1;
+  if (shared) {
+    index->res = NULL;
+    sk_cuvs_res_release(res, shared);
+  }
   return index;
 fail_idx:
   cuvsCagraIndexDestroy(index->idx);
