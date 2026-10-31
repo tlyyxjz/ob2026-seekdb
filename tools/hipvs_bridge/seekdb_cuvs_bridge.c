@@ -36,21 +36,21 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  h->ip->build_algo = NN_DESCENT;
-  h->ip->graph_degree = 128;
-  /* intermediate_graph_degree stays at the baseline's 256. v11 changed both
-   * this and nn_descent_niter at once and lost hidden250k:recall@100, so which
-   * of the two cost the long tail is still unknown. This commit moves only the
-   * iteration count, leaving the candidate graph the pruner sees exactly as
-   * wide as the frozen baseline had it.
+  /* ITERATIVE_CAGRA_SEARCH: the only one of the four build algorithms in the
+   * pinned cuVS enum (AUTO_SELECT / IVF_PQ / NN_DESCENT / ITERATIVE_CAGRA_SEARCH)
+   * that we have never tried. It builds the graph with CAGRA's own search plus
+   * optimize passes instead of NN-Descent's blind edge proposals, and it reads
+   * the uncompressed dataset, so it does not pay the PQ distortion that IVF_PQ
+   * would. nn_descent_niter is irrelevant here and left at the baseline's 100.
    *
-   * 20 is what cuVS itself defaults to; the baseline pins 100. NN-Descent's
-   * early stop (update_counter_ < termination_threshold * nrow * dim per
-   * interval) needs only a few dozen edge updates at 250K points, so it never
-   * fires here and 100 is 5x the iterations. Locally measured 44,291 -> 15,693
-   * ms (2.82x) at ideg 256, with R@10/R@100 both 0.9999 on SIFT250K. */
+   * Everything else -- intermediate_graph_degree 256, graph_degree 128, the
+   * search path, the search values -- is byte-identical to the frozen baseline. */
+  h->ip->build_algo = ITERATIVE_CAGRA_SEARCH;
+  h->ip->graph_degree = 128;
+  /* Both of these keep the baseline's values: this commit changes only which
+   * algorithm proposes the graph, so that the reading answers one question. */
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 20;
+  h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
