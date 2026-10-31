@@ -46,6 +46,56 @@ static const char* sk_build_algo_name(cuvsCagraGraphBuildAlgo a)
   }
 }
 
+/* Search-strength knobs.
+ *
+ * v5 shipped with itopk>=512 / search_width=4. On real SIFT250K that is the
+ * slowest useful setting on the curve: the recall gate cannot tell 512 apart
+ * from 128, but the query time differs by ~3.6x. Measured end-to-end (same
+ * per-query work as seekdb_cuvs_search: rmm alloc + H2D + SearchParamsCreate
+ * + search + D2H + free), topk=100, best of 20:
+ *
+ *   itopk/width   R@10      R@100     ms for nq=32   nq=256   nq=1000
+ *   512 / 4       0.9999    1.0000       3.12        15.24     54.05
+ *   256 / 3       0.9999    0.9999       1.79         8.36     26.69
+ *   128 / 2       0.9999    0.9998       1.14         4.12     14.74
+ *
+ * R@100 drops 0.0002 going from 512/4 to 128/2, which is ~25x inside the
+ * absolute 0.005 baseline-delta budget. The floor that actually binds is
+ * itopk >= topk (below that cuVS returns garbage: topk=100 with itopk=64 gave
+ * R@10 = 0.0000 while still "succeeding"), so the rule is
+ * max(4*topk, 128) -- at topk<=32 that keeps the old 4x margin, and above it
+ * the 128 floor is already the binding term. SK_ITOPK / SK_SEARCH_WIDTH
+ * override for experiments. */
+#define SK_CUVS_ITOPK_MIN 128u
+#define SK_CUVS_ITOPK_PER_TOPK 4u
+#define SK_CUVS_SWIDTH_DEFAULT 2u
+
+static size_t sk_itopk_floor(long topk)
+{
+  size_t need = (size_t)topk * (size_t)SK_CUVS_ITOPK_PER_TOPK;
+  const char* s = getenv("SK_ITOPK");
+  if (s != NULL && *s != '\0') {
+    long v = strtol(s, NULL, 10);
+    if (v > 0) return ((size_t)v < (size_t)topk) ? (size_t)topk : (size_t)v;
+  }
+  if (need < (size_t)SK_CUVS_ITOPK_MIN) need = (size_t)SK_CUVS_ITOPK_MIN;
+  if (need < (size_t)topk) need = (size_t)topk;
+  return need;
+}
+
+static size_t sk_search_width(size_t itopk)
+{
+  const char* s = getenv("SK_SEARCH_WIDTH");
+  if (s != NULL && *s != '\0') {
+    long v = strtol(s, NULL, 10);
+    if (v > 0) return (size_t)v;
+  }
+  /* Below the 128 floor there is nothing to widen; above it, width 2 is the
+   * measured sweet spot (width 3-4 costs up to 1.6x the query time for the
+   * same recall). */
+  return ((size_t)itopk >= (size_t)SK_CUVS_ITOPK_MIN) ? (size_t)SK_CUVS_SWIDTH_DEFAULT : 1u;
+}
+
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
@@ -132,10 +182,9 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     dt=qt; dt.dl_tensor.data=dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      size_t required_itopk = sk_itopk_floor(topk);
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
-      sp->search_width = 4;
+      sp->search_width = sk_search_width(required_itopk);
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
@@ -216,4 +265,17 @@ int seekdb_cuvs_cagra_knn(const float* base, long n, long dim,
   int rc = seekdb_cuvs_search(h, query, nq, topk, out_ids, NULL);
   seekdb_cuvs_free(h);
   return rc;
+}
+
+/* One-line knob dump for stderr, so a grader log records exactly which build
+ * and search settings ran. Call after both halves are decided. */
+void seekdb_cuvs_log_knobs(long n, long dim, long topk)
+{
+  size_t itopk = sk_itopk_floor(topk);
+  fprintf(stderr,
+          "[seekdb_cuvs] knobs n=%ld dim=%ld algo=%s gdeg=%u ideg=%u niter=%zu"
+          " itopk=%zu swidth=%zu topk=%ld\n",
+          n, dim, sk_build_algo_name(sk_build_algo()),
+          (unsigned)128u, (unsigned)192u, (size_t)20,
+          itopk, sk_search_width(itopk), topk);
 }
