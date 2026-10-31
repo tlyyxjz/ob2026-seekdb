@@ -39,7 +39,14 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* Half the baseline's iteration count, one knob at a time. v11 moved both
+   * this and intermediate_graph_degree to 20/192 and lost hidden250k:
+   * recall@100, so the blame was never split; v14 split it by dropping only
+   * the iteration count to 20. This is the midpoint step for the case where 20
+   * turns out to be past the recall cliff: 50 iterations is still half the
+   * work, and NN-Descent's early stop needs only a few dozen edge updates at
+   * 250K points, so the baseline's 100 is well past convergence. */
+  h->ip->nn_descent_niter = 50;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
