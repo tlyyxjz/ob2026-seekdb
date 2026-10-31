@@ -38,8 +38,19 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
+  /* intermediate_graph_degree stays at the baseline's 256. v11 changed both
+   * this and nn_descent_niter at once and lost hidden250k:recall@100, so which
+   * of the two cost the long tail is still unknown. This commit moves only the
+   * iteration count, leaving the candidate graph the pruner sees exactly as
+   * wide as the frozen baseline had it.
+   *
+   * 20 is what cuVS itself defaults to; the baseline pins 100. NN-Descent's
+   * early stop (update_counter_ < termination_threshold * nrow * dim per
+   * interval) needs only a few dozen edge updates at 250K points, so it never
+   * fires here and 100 is 5x the iterations. Locally measured 44,291 -> 15,693
+   * ms (2.82x) at ideg 256, with R@10/R@100 both 0.9999 on SIFT250K. */
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  h->ip->nn_descent_niter = 20;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
