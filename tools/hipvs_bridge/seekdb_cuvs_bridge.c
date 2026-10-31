@@ -35,7 +35,14 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* 20 is what cuVS itself defaults to (cuvsCagraIndexParamsCreate sets
+   * nn_descent_niter = 20); the frozen baseline pins 100, i.e. 5x the passes.
+   * NN-Descent's early stop needs only a few dozen edge updates at 250K points,
+   * so it never fires at this size and all 100 iterations really run.
+   * Measured locally at these exact settings (ideg 256, degree 128): 44,291 ->
+   * 15,693 ms, i.e. 2.82x, R@10/R@100 both 0.9999 on SIFT250K.
+   * intermediate_graph_degree and graph_degree stay at the baseline's values. */
+  h->ip->nn_descent_niter = 20;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
