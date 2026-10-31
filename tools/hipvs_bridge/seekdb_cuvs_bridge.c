@@ -18,7 +18,8 @@
 #define CUVS_SCRATCH_TOPK 128
 
 typedef struct {
-  cuvsResources_t         res;   /* borrowed from the process-wide holder */
+  cuvsResources_t         res;   /* owned by this handle unless res_owned == 0 */
+  int                     res_owned; /* 1 = destroy in seekdb_cuvs_free */
   cuvsCagraIndexParams_t  ip;
   cuvsCagraIndex_t        idx;
   cuvsCagraSearchParams_t sp;    /* built once, reused per search */
@@ -212,7 +213,16 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->sp = sk_cuvs_search_params(CUVS_SCRATCH_TOPK);
   if (h->sp == NULL) { goto fail_build; }
   h->n = n; h->dim = dim;
-  sk_cuvs_res_release(res, shared);
+  /* The handle keeps its resource alive.
+   *
+   * In the default (non-shared) mode sk_cuvs_res_release() destroys the
+   * resource. v5 released it here and then returned a handle whose nd/dd
+   * scratch had been allocated from it, so the next search passed a dead
+   * resource and dead device pointers to cuvsRMMFree/cuvsCagraSearch. Keep
+   * ownership on the handle and destroy it in seekdb_cuvs_free(); in shared
+   * mode this only drops the lock, so the release call is still needed. */
+  if (shared) { sk_cuvs_res_release(res, shared); }
+  h->res_owned = shared ? 0 : 1;
   return h;
 
 fail_build:
@@ -220,8 +230,8 @@ fail_build:
 fail_idx:
   cuvsCagraIndexParamsDestroy(h->ip);
 fail_ip:
-  sk_cuvs_res_release(res, shared);
   fprintf(stderr, "[seekdb_cuvs] build failed: %s\n", cuvsGetLastErrorText());
+  sk_cuvs_res_release(res, shared);
   free(h);
   return NULL;
 }
@@ -231,12 +241,16 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 {
   sk_cuvs_index* h = (sk_cuvs_index*)handle;
   cuvsResources_t res = NULL;
-  int shared = 0;
   float* qd = 0;
   int rc = 0;
   if (h == NULL) { return 1; }
   if (topk <= 0 || topk > CUVS_SCRATCH_TOPK || nq <= 0) { return 2; }
-  if ((res = sk_cuvs_res_acquire(&shared)) == NULL) { return 1; }
+  /* Use the resource the scratch belongs to. Allocating nd/dd from a fresh
+   * resource here and freeing them from the handle's (different) resource in
+   * seekdb_cuvs_free() would hand cuVS an allocator mismatch. */
+  res = h->res;
+  if (res == NULL) { return 1; }
+  if (!h->res_owned) { pthread_mutex_lock(&g_res_mu); }
 
   if (sk_cuvs_scratch_reserve(h, res, nq) != 0) { rc = 12; goto out; }
   if (cuvsRMMAlloc(res, (void**)&qd, sizeof(float)*nq*h->dim) != CUVS_SUCCESS) { rc = 10; goto out; }
@@ -274,7 +288,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
 
 out:
   if (qd) { cuvsRMMFree(res, qd, sizeof(float)*nq*h->dim); }
-  sk_cuvs_res_release(res, shared);
+  if (!h->res_owned) { pthread_mutex_unlock(&g_res_mu); }
   if (rc) { fprintf(stderr, "[seekdb_cuvs] search rc=%d: %s\n", rc, cuvsGetLastErrorText()); }
   return rc;
 }
@@ -282,13 +296,20 @@ out:
 void seekdb_cuvs_free(void* handle)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)handle;
-  cuvsResources_t res = NULL;
-  int shared = 0;
   if (h == NULL) { return; }
-  if ((res = sk_cuvs_res_acquire(&shared)) != NULL) {
-    if (h->nd) { cuvsRMMFree(res, h->nd, h->nd_cap * sizeof(unsigned)); }
-    if (h->dd) { cuvsRMMFree(res, h->dd, h->nd_cap * sizeof(float)); }
-    sk_cuvs_res_release(res, shared);
+  /* Free the scratch with the resource it was allocated from, then hand that
+   * resource back - destroying it here is the last use, so nothing below may
+   * touch h->res again. */
+  if (h->res != NULL) {
+    if (!h->res_owned) { pthread_mutex_lock(&g_res_mu); }
+    if (h->nd) { cuvsRMMFree(h->res, h->nd, h->nd_cap * sizeof(unsigned)); h->nd = NULL; }
+    if (h->dd) { cuvsRMMFree(h->res, h->dd, h->nd_cap * sizeof(float));    h->dd = NULL; }
+    if (h->res_owned) {
+      cuvsResourcesDestroy(h->res);
+    } else {
+      pthread_mutex_unlock(&g_res_mu);
+    }
+    h->res = NULL;
   }
   cuvsCagraIndexDestroy(h->idx);
   cuvsCagraIndexParamsDestroy(h->ip);
@@ -299,16 +320,15 @@ void seekdb_cuvs_free(void* handle)
 int seekdb_cuvs_serialize(void* handle, const char* filename)
 {
   sk_cuvs_index* index = (sk_cuvs_index*)handle;
-  cuvsResources_t res = NULL;
-  int shared = 0;
   int rc = 0;
   if (!index || !filename) return 1;
-  if ((res = sk_cuvs_res_acquire(&shared)) == NULL) return 1;
-  if (cuvsCagraSerialize(res, filename, index->idx, 1) != CUVS_SUCCESS) {
+  if (index->res == NULL) return 1;
+  if (!index->res_owned) { pthread_mutex_lock(&g_res_mu); }
+  if (cuvsCagraSerialize(index->res, filename, index->idx, 1) != CUVS_SUCCESS) {
     fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
     rc = 1;
   }
-  sk_cuvs_res_release(res, shared);
+  if (!index->res_owned) { pthread_mutex_unlock(&g_res_mu); }
   return rc;
 }
 
@@ -340,15 +360,18 @@ void* seekdb_cuvs_deserialize(const char* filename, long n, long dim)
   if (index->sp == NULL) goto fail_idx;
   index->n = n;
   index->dim = dim;
-  sk_cuvs_res_release(res, shared);
+  /* Same ownership rule as the build path: the handle keeps its resource so a
+   * later search can allocate the nd/dd scratch from it. */
+  if (shared) { sk_cuvs_res_release(res, shared); }
+  index->res_owned = shared ? 0 : 1;
   return index;
 fail_idx:
   cuvsCagraIndexDestroy(index->idx);
 fail_ip:
   cuvsCagraIndexParamsDestroy(index->ip);
+  fprintf(stderr, "[seekdb_cuvs] deserialize failed: %s\n", cuvsGetLastErrorText());
   sk_cuvs_res_release(res, shared);
 fail:
-  fprintf(stderr, "[seekdb_cuvs] deserialize failed: %s\n", cuvsGetLastErrorText());
   free(index);
   return NULL;
 }
