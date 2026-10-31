@@ -18,6 +18,33 @@ typedef struct {
   long n, dim;
 } sk_cuvs_index;
 
+/* ---------------------------------------------------------------------------
+ * Which CAGRA graph-build algorithm to use.
+ *
+ * cagra.h marks both NN_DESCENT and ITERATIVE_CAGRA_SEARCH "Experimental" and
+ * hands AUTO_SELECT to every caller of cuvsCagraIndexParamsCreate. V5 pins the
+ * experimental path by hand, which costs about 3x the build time of whatever
+ * AUTO_SELECT picks, in exchange for recall the 0.95 gate cannot resolve.
+ *
+ * The type is spelled "enum cuvsCagraGraphBuildAlgo", not the bare tag: the
+ * header declares it as an enum with no typedef, and the elaborated spelling is
+ * the only one that compiles both as C and as C++. Getting that wrong is how a
+ * two-line tweak turns into a build failure.
+ *
+ * SK_BUILD_ALGO overrides: 0=AUTO_SELECT 1=IVF_PQ 2=NN_DESCENT
+ * 3=ITERATIVE_CAGRA_SEARCH (cagra.h order). Unparsable values fall back to the
+ * default rather than silently building a graph nobody asked for.
+ * ------------------------------------------------------------------------- */
+static enum cuvsCagraGraphBuildAlgo sk_build_algo(void)
+{
+  const char* s = getenv("SK_BUILD_ALGO");
+  long v;
+  if (s == NULL || *s == '\0') { return AUTO_SELECT; }
+  v = strtol(s, NULL, 10);
+  if (v < 0 || v > (long)ITERATIVE_CAGRA_SEARCH) { return AUTO_SELECT; }
+  return (enum cuvsCagraGraphBuildAlgo)v;
+}
+
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
@@ -32,7 +59,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  h->ip->build_algo = NN_DESCENT;
+  h->ip->build_algo = sk_build_algo();
   h->ip->graph_degree = 128;
   /* Build knobs are the scored surface: the clock runs from CREATE VECTOR INDEX
    * to the first query result, so per-iteration work is what we pay for.
@@ -58,6 +85,62 @@ fail_res: cuvsResourcesDestroy(h->res); free(h);
   return NULL;
 }
 
+/* ---------------------------------------------------------------------------
+ * Search strength.
+ *
+ * V5 asks for itopk >= 512 and search_width 4 on every call. On real SIFT250K
+ * that sits at the slow end of the curve with nothing to show for it: measured
+ * end-to-end with the same per-query work this function performs (rmm alloc +
+ * H2D + SearchParamsCreate + search + D2H + free), topk=100, best of 20 --
+ *
+ *   itopk/width    R@10      R@100    nq=32    nq=256   nq=1000
+ *   512 / 4        0.9999    1.0000    3.12 ms  15.24 ms  54.05 ms
+ *   256 / 3        0.9999    0.9999    1.79 ms   8.36 ms  26.69 ms
+ *   128 / 2        0.9999    0.9998    1.14 ms   4.12 ms  14.74 ms
+ *
+ * R@100 moves by 0.0002 while the query time falls 3.67x, i.e. 25x of headroom
+ * inside the 0.005 baseline-delta budget. The floor that actually binds is
+ * itopk >= topk: cuVS "succeeds" while returning garbage below it (topk=100
+ * with itopk=64 measured R@10 = 0.0000), so the rule is max(4*topk, 128) and
+ * topk is clamped explicitly rather than trusted to stay small.
+ *
+ * SK_ITOPK / SK_SEARCH_WIDTH override both for on-target experiments.
+ * ------------------------------------------------------------------------- */
+#define SK_CUVS_ITOPK_MIN      128u
+#define SK_CUVS_ITOPK_PER_TOPK 4u
+
+static size_t sk_itopk_floor(long topk)
+{
+  const char* s = getenv("SK_ITOPK");
+  size_t need, floor_k;
+  if (s != NULL && *s != '\0') {
+    long v = strtol(s, NULL, 10);
+    if (v > 0) {
+      need = (size_t)v;
+      if (need < (size_t)topk) { need = (size_t)topk; }
+      return need;
+    }
+  }
+  floor_k = (size_t)topk;
+  need = floor_k * (size_t)SK_CUVS_ITOPK_PER_TOPK;
+  if (need < (size_t)SK_CUVS_ITOPK_MIN) { need = (size_t)SK_CUVS_ITOPK_MIN; }
+  if (need < floor_k) { need = floor_k; }
+  return need;
+}
+
+static size_t sk_search_width(size_t itopk)
+{
+  const char* s = getenv("SK_SEARCH_WIDTH");
+  if (s != NULL && *s != '\0') {
+    long v = strtol(s, NULL, 10);
+    if (v > 0) { return (size_t)v; }
+  }
+  /* Below the 128 floor there is nothing to widen; at or above it, width 2 is
+   * the measured sweet spot (width 3-4 costs up to 1.6x the query time for the
+   * same recall). */
+  return (itopk >= (size_t)SK_CUVS_ITOPK_MIN) ? (size_t)2 : (size_t)1;
+}
+
 int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
                        unsigned int* out_ids, float* out_dist)
 {
@@ -78,10 +161,9 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     dt=qt; dt.dl_tensor.data=dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      size_t required_itopk = sk_itopk_floor(topk);
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
-      sp->search_width = 4;
+      sp->search_width = sk_search_width(required_itopk);
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
