@@ -35,7 +35,20 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* Half the iterations the baseline pins, one knob at a time.
+   *
+   * NN-Descent's cost is dominated by the refinement loop, so niter is the
+   * only lever that moves the build clock by a factor rather than a few
+   * percent. The gate that bites is deep recall: commit 62860ccc
+   * (ideg 192 + niter 20) came back with exactly one failed gate,
+   * "hidden250k:recall@100_baseline_delta" - recall@10 stayed inside both
+   * its floor and its delta - so 20 iterations is too few for R@100 and
+   * something between 20 and 100 should hold. 50 is that midpoint.
+   *
+   * Everything else stays byte-identical to the frozen baseline: same
+   * intermediate degree, same graph degree, same search parameters (narrowing
+   * search fails the Hidden250K recall gate on its own, see 47235082). */
+  h->ip->nn_descent_niter = 50;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
