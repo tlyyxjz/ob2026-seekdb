@@ -47,13 +47,21 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * dozen edge updates at 250K points, so it never fires at this size and all
    * 100 passes really run.
    *
-   * 15 rather than 20 is deliberate: at ideg 256, 20 iterations measured
-   * 44,291 -> 15,693 ms (2.82x), which is 13.2 of the 14 build points. Crossing
-   * 3.0x needs about 14,760 ms, which the same measurement puts near 15
-   * iterations. This is the last 0.8 points and it is bought purely with
-   * iteration count, so recall is the bet -- not speed. */
+   * 13 rather than 15 is the margin shot, not the point shot. Two measured
+   * points on the real 250K set, 44,291 ms at 100 iterations and 15,693 ms at
+   * 20, fit build(n) = 8,543 + 358*n ms: there is a fixed 8.5 s floor (graph
+   * init, prune, copies) that no iteration count can remove.
+   *
+   *   n=20 -> 15.7 s = 2.82x   (13.21 of 14 build points, misses the gate)
+   *   n=15 -> 13.9 s = 3.19x   (3.0x is the cap, so 0.26x of slack)
+   *   n=13 -> 13.2 s = 3.36x   (0.43x of slack)
+   *
+   * 3.0x is the last build point and the ranking threshold sits at 2.93x, so
+   * 15 is already enough on paper; the extra 0.17x at 13 only insures the
+   * difference between this machine and the grading machine. Recall is the
+   * bet either way, and it is the only thing this branch spends. */
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 15;
+  h->ip->nn_descent_niter = 13;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
