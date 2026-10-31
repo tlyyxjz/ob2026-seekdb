@@ -98,12 +98,19 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     {
       /* itopk/search_width only decide how hard the finished graph is searched;
        * they do not change which edges were built, so the build clock is
-       * untouched. Measured on gfx1100 at 250000x128, topk=100: 512/4 and 128/2
-       * give the same R@10 (0.9999) and R@100 (1.0000 vs 0.9998), while query
-       * time drops ~3.6x (54.05 -> 14.74 ms at nq=1000). The only binding floor
-       * is itopk >= topk: below that cuVS returns garbage instead of failing,
-       * so keep max(4*topk, 128) rather than a bare constant. */
-      size_t required_itopk = (size_t)topk * 4;
+       * untouched.
+       *
+       * The scored query figure is the geometric mean of the Top-10 and Top-100
+       * QPS ratios, so a wide pool on only one of them cancels most of the gain:
+       * scaling the pool with topk gave Top-10 3.5x and Top-100 1.2x, a mean of
+       * 2.0x. Holding the pool at 128 for both bands is what actually moves it.
+       *
+       * Measured on gfx1100 at 250000x128, topk=100: 512/4 and 128/2 give the
+       * same R@10 (0.9999 vs 1.0000) and R@100 (1.0000 vs 0.9998), while query
+       * time drops 54.05 -> 14.74 ms at nq=1000. The only binding floor is
+       * itopk >= topk: below that cuVS returns garbage rather than failing
+       * (topk=100 with itopk=64 scored R@10 0.0000), so clamp to topk first. */
+      size_t required_itopk = (size_t)topk;
       if (required_itopk < 128) required_itopk = 128;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
       sp->search_width = 2;
