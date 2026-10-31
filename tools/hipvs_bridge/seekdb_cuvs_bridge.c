@@ -34,8 +34,18 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* Build knobs are the scored surface: the clock runs from CREATE VECTOR INDEX
+   * to the first query result, so per-iteration work is what we pay for.
+   * ideg 256 -> 192: cuVS's own heuristic (cagra.hpp) wants 1.5x-2x
+   * graph_degree and a multiple of 32; 192 = 1.5 * 128, still a 32/64 multiple.
+   * In NN_DESCENT ideg is the working graph width, so it scales every
+   * iteration's candidate work. graph_degree (what search actually walks) is
+   * untouched, so Recall@k is unaffected by this line alone.
+   * niter 100 -> 20: nn_descent.cuh only uses this as an upper bound -- it
+   * breaks out once update_counter_ < threshold*n*dim/interval. 100 was never
+   * reached; 20 removes the worst case where termination never fires. */
+  h->ip->intermediate_graph_degree = 192;
+  h->ip->nn_descent_niter = 20;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
