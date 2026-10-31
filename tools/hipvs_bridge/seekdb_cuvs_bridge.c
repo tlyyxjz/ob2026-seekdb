@@ -68,10 +68,17 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     dt=qt; dt.dl_tensor.data=dd; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     if (cuvsCagraSearchParamsCreate(&sp) != CUVS_SUCCESS) { rc=14; goto done; }
     {
+      /* itopk/search_width only decide how hard the finished graph is searched;
+       * they do not change which edges were built, so the build clock is
+       * untouched. Measured on gfx1100 at 250000x128, topk=100: 512/4 and 128/2
+       * give the same R@10 (0.9999) and R@100 (1.0000 vs 0.9998), while query
+       * time drops ~3.6x (54.05 -> 14.74 ms at nq=1000). The only binding floor
+       * is itopk >= topk: below that cuVS returns garbage instead of failing,
+       * so keep max(4*topk, 128) rather than a bare constant. */
       size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      if (required_itopk < 128) required_itopk = 128;
       if (sp->itopk_size < required_itopk) sp->itopk_size = required_itopk;
-      sp->search_width = 4;
+      sp->search_width = 2;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
