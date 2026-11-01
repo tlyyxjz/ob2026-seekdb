@@ -107,8 +107,14 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     nt=qt; nt.dl_tensor.data=h->ndv; nt.dl_tensor.dtype.code=kDLUInt; nt.dl_tensor.shape=nsh;
     dt=qt; dt.dl_tensor.data=h->ddv; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      /* One queue of topk+32 instead of 4*topk (>=512) entries. The frozen
+       * baseline asks for 512 on a topk of 100, which is 5x what CAGRA's own
+       * default (64) requests; the extra depth only buys recall if the graph is
+       * too sparse to find the answer in the first 132 candidates. Width stays
+       * at the baseline 4 -- v6 moved width and itopk together (2 / 128) and
+       * lost recall, so width is not touched in the same commit again. */
+      size_t required_itopk = (size_t)topk + 32;
+      if (required_itopk < 128) required_itopk = 128;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }
