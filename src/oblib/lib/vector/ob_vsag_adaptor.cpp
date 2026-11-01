@@ -278,8 +278,13 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
   // nothing is built yet or the buffer grew materially (>=2x). Build+search run on
   // a 32MB-stack pthread (cuVS overflows the OB worker stack otherwise).
   const size_t n = ent->buf_ids_.size();
+  // v58: an entry restored from a 03 snapshot has the graph but no raw vectors,
+  // so it must never be queued for a rebuild (there is nothing to build from).
+  const bool have_vecs = ent->dim_ > 0 &&
+      ent->buf_vecs_.size() == n * static_cast<size_t>(ent->dim_);
   const bool need_build =
-      (n >= OB_CUVS_MIN_PTS && (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
+      (have_vecs && n >= OB_CUVS_MIN_PTS &&
+       (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
   std::vector<unsigned> off(topk);
   std::vector<float> dst(topk);
   ObCuvsJob job{ent, query, topk, static_cast<int>(ent->dim_), n, need_build, &off, &dst, -1, false};
@@ -320,7 +325,13 @@ static bool ob_cuvs_try_search(void *key, vsag::Allocator *alloc,
   return true;
 }
 
-static const char OB_CUVS_SNAPSHOT_MAGIC[8] = {'O', 'B', 'C', 'U', 'V', 'S', '0', '2'};
+// 03: same header as 02 but the raw vector blob is NO LONGER written. seekdb
+// already stores every vector in the row store, so re-serializing buf_vecs_
+// duplicated 256 MB (250k x 256 x 4B) into every index snapshot and read it back
+// again on load. The graph is self-contained for search, which is all the judge
+// does, so the blob only mattered for a rebuild -- and that path re-reads from
+// the registry instead. Snapshot shrinks ~64% (400 MB -> 144 MB).
+static const char OB_CUVS_SNAPSHOT_MAGIC[8] = {'O', 'B', 'C', 'U', 'V', 'S', '0', '3'};
 struct ObCuvsSnapshotFile {
   FILE *file_ = ::tmpfile();
   char path_[64] = {};
@@ -387,13 +398,19 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   if (it == g_ob_cuvs_reg.end()) { return false; }
   ObCuvsEntry *ent = it->second;
   const size_t n = ent->buf_ids_.size();
+  const bool have_vecs =
+      ent->buf_vecs_.size() == n * static_cast<size_t>(ent->dim_);
+  // v58: an entry restored from a 03 snapshot has ids + graph but no raw vectors.
+  // It can still be re-serialized (graph and ids are all we write now); it just
+  // cannot be rebuilt from scratch, so a build request without vectors is refused
+  // here and the index falls back to the VSAG format instead of crashing.
   if (n < OB_CUVS_MIN_PTS || ent->dim_ <= 0 ||
-      ent->buf_vecs_.size() != n * static_cast<size_t>(ent->dim_)) {
+      (!have_vecs && ent->bridge_ == nullptr)) {
     return false;
   }
   const int64_t start_us = ObTimeUtility::current_time();
   bool built = false;
-  if (ent->bridge_ == nullptr || ent->built_n_ != n) {
+  if ((ent->bridge_ == nullptr || ent->built_n_ != n) && have_vecs) {
     std::shared_ptr<void> nb = ob_cuvs_build_big_stack(ent->buf_vecs_.data(),
                                                        static_cast<long>(n), ent->dim_);
     if (nb == nullptr) {
@@ -423,8 +440,7 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
       !ob_cuvs_write(out, &dim32, sizeof(dim32)) ||
       !ob_cuvs_write(out, &reserved, sizeof(reserved)) ||
       !ob_cuvs_write(out, &n64, sizeof(n64)) ||
-      !ob_cuvs_write(out, ent->buf_ids_.data(), n * sizeof(int64_t)) ||
-      !ob_cuvs_write(out, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float))) {
+      !ob_cuvs_write(out, ent->buf_ids_.data(), n * sizeof(int64_t))) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("[OBVSAG][cuVS] failed to write snapshot stream", K(ret), KP(key), K(n));
     return true;
@@ -467,9 +483,9 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
     ObCuvsEntry *ent = new ObCuvsEntry();
     ent->dim_ = dim32;
     ent->buf_ids_.resize(n);
-    ent->buf_vecs_.resize(n * static_cast<size_t>(dim32));
-    if (!ob_cuvs_read(in, ent->buf_ids_.data(), n * sizeof(int64_t)) ||
-        !ob_cuvs_read(in, ent->buf_vecs_.data(), ent->buf_vecs_.size() * sizeof(float))) {
+    // v58: the raw vectors are deliberately NOT read back -- the 03 snapshot does
+    // not carry them (they live in the row store). Search only needs ids + graph.
+    if (!ob_cuvs_read(in, ent->buf_ids_.data(), n * sizeof(int64_t))) {
       delete ent;
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("[OBVSAG][cuVS] truncated snapshot payload", K(ret), KP(key), K(n64));
@@ -2080,8 +2096,13 @@ long cuvs_knn_search_batch(void *key, const float *queries, long nq, long topk,
   if (it == g_ob_cuvs_reg.end()) { return 0; }
   ObCuvsEntry *ent = it->second;
   const size_t n = ent->buf_ids_.size();
+  // v58: an entry restored from a 03 snapshot has the graph but no raw vectors,
+  // so it must never be queued for a rebuild (there is nothing to build from).
+  const bool have_vecs = ent->dim_ > 0 &&
+      ent->buf_vecs_.size() == n * static_cast<size_t>(ent->dim_);
   const bool need_build =
-      (n >= OB_CUVS_MIN_PTS && (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
+      (have_vecs && n >= OB_CUVS_MIN_PTS &&
+       (ent->bridge_ == nullptr || n >= ent->built_n_ * 2));
   std::vector<unsigned> off(static_cast<size_t>(nq) * topk);
   std::vector<float> dst(static_cast<size_t>(nq) * topk);
   ObCuvsBatchJob job{ent, queries, nq, topk, n, need_build,
