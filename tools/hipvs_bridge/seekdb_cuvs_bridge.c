@@ -69,6 +69,13 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->nn_descent_niter = 32;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
+  /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
+   * 是 4096 次 nq=1 的单条 SQL 查询 —— SINGLE_CTA 恰好是这种场景最慢的实现。
+   * 同一份 libcuvs、同一张卡（gfx1100）、同一个索引上实测单条 topk=100 查询：
+   *   SINGLE_CTA（默认）3982 us/q ｜ MULTI_CTA 603 ｜ AUTO 583；
+   * 三者 R@100 完全相同（0.8776），因为 algo 只决定"怎么算"，不改变搜索结果。
+   * AUTO 按 nq 自行选择实现。这一行与图构建无关，召回不受影响。 */
+  h->sp->algo = AUTO;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
   h->n = n; h->dim = dim;
   return h;
