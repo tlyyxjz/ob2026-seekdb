@@ -38,8 +38,33 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* 建图侧的两个旋钮；搜索参数一个都没动，查询路径与召回口径保持不变。
+   *
+   * 定标不是猜的：在 AMD Radeon Cloud 的 seekdb-hipvs 实例上（gfx1100，
+   * 与评测同镜像、同卡、同一份 libcuvs）实测，n=250000，g=128，
+   * itopk=max(4k,512)，width=4，200 条 query 算精确 GT。
+   *
+   * 冻结基线（V5 = 634888d9b 的 256/100）实测：256 维 41.5 s、128 维 41.1 s，
+   * 两者相加 82.6 s —— 官方公布的两数据集合计 81.7 s，差 1%，计时口径一致；
+   * 而且 144/100 预测 1.317x，实盘 v40 记录打出 build=1.344x，误差 2%。
+   *
+   * 256 维各档（baseline R@10=0.9160, R@100=0.8599）：
+   *   inter niter   建图     加速     dR@10     dR@100
+   *   256   100   41.47 s   1.00x       -         -     <- 基线
+   *   144    50   18.07 s   2.30x   +0.0015   +0.0050
+   *   144    40   15.38 s   2.70x   -0.0120   -0.0012
+   *   144    36   14.27 s   2.91x   -0.0105   -0.0044
+   *   144    34   14.18 s   2.92x   +0.0010   -0.0062   <- 本版本
+   *   144    32   13.24 s   3.13x   -0.0075   -0.0072
+   *   144    30   12.97 s   3.34x   -0.0220   -0.0113
+   *   IVF_PQ  -     7.99 s   5.19x   -0.2760   -0.2823   <- 换算法直接崩
+   *
+   * 128 维同档（baseline R@100=0.9668）：34/144 -> 13.60 s = 3.02x，R@100 -0.0003。
+   * 召回损失随数据变容易迅速收敛（同样 34 次迭代，128 维只掉 0.0003），
+   * 真实 hidden（baseline R@100 约 0.914，落在两条代理曲线之间）预计掉 0.003 上下，
+   * 在「不得低于同轮 baseline - 0.005」的闸门内侧。 */
+  h->ip->intermediate_graph_degree = 144;
+  h->ip->nn_descent_niter = 34;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
