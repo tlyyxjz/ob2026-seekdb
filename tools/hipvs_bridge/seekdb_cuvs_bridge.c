@@ -96,8 +96,27 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     nt=qt; nt.dl_tensor.data=h->ndv; nt.dl_tensor.dtype.code=kDLUInt; nt.dl_tensor.shape=nsh;
     dt=qt; dt.dl_tensor.data=h->ddv; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      /* itopk 512 -> 132. This is where the query time actually is.
+       *
+       * The baseline's own numbers give the split: SIFT250K (128 dims) runs at
+       * 147 QPS = 6.8 ms/query, Hidden250K (256 dims) at 87 QPS = 11.5 ms. If
+       * the search cost scales with dimension then 2S+F=11.5 and S+F=6.8, so
+       * F=2.1 ms of fixed overhead and S=9.4 ms of GPU search -- the search
+       * dominates, which is why v13's buffer/param reuse (real, but only worth
+       * 2.9%) barely moved the score.
+       *
+       * itopk_size is the size of the candidate queue the search maintains, and
+       * the cost grows with it. 512 for topk=100 is 5x what CAGRA's own default
+       * (64) asks for. 132 still holds 1.32x topk, so the returned top-k is
+       * unchanged whenever the answer is found among the first 132 candidates.
+       *
+       * width stays at the baseline 4. v6 moved width and itopk together
+       * (2 / 128) and lost recall; width sets how many nodes expand per
+       * iteration, so that is the likelier culprit and it is not touched here.
+       * Build is untouched at niter 100, so any score delta vs v13 is the query
+       * lever alone. */
+      size_t required_itopk = (size_t)topk + 32;
+      if (required_itopk < 128) required_itopk = 128;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }
