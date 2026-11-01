@@ -85,7 +85,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * mode2（有结构，更接近真实描述子）上 niter 24 的 R@100 是 0.9995，几乎无损。
    *
    * 预期：平台 T = 38.40 + 223.9 x 24 = 43.8 s -> build 1.87x（v53 为 1.793x）。 */
-  h->ip->nn_descent_niter = 12;
+  h->ip->nn_descent_niter = 6;
   /* v60（2026-11-01 23:35）：把「压 niter」换成「加大图度换 niter」。
    *
    * 同轮同镜像实测（250k x 256，nq=200 精确 GT，DO_GT=1）：
