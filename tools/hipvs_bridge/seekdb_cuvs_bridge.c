@@ -51,23 +51,28 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *
    *     build(n, d) = 2275 * n^0.6447 * (d/256)^2   [ms]
    *
-   * (n^0.6447 < n means later rounds get cheaper as the graph prunes; a linear
-   * model therefore over-estimates the speed-up at low n.) Solving the two
-   * knobs jointly is what makes 3.0x reachable at all:
+   * The recall budget is SHARED: build speed and search speed both spend the
+   * same 0.005 drop allowance, so the cheapest axis has to go first. Rounds
+   * cost the most -- niter alone needs n=18 for 3.0x and n=20 already busts
+   * every hidden250k gate. d costs the least, because the number of refinement
+   * rounds is untouched:
    *
-   *     niter alone needs n=18   -> n=20 already busts the gates
-   *     d=192 + n=44 hits 3.02x  -> only 56% of the rounds removed
-   *     d=192 + n=40 hits 3.22x  -> the point this branch picks in v37
+   *     d=192 + n=100 -> 1.78x, 7.33 pts   (this branch's v36 anchor)
+   *     d=160 + n=100 -> 2.56x, 11.98 pts  (v41, no rounds removed)
+   *     d=144 + n=100 -> 3.16x, 14.00 pts  (v40, no rounds removed, full cap)
+   *     d=192 + n=40  -> 3.21x, 14.00 pts  (v37, 60% of the rounds removed)
    *
-   * v36 itself keeps niter at the baseline 100 and only shrinks d to 192:
-   * 24.9 s = 1.78x, i.e. 7.35 of the 14 build points, with zero reduction in
-   * refinement rounds -- the cheapest way to bank a safe positive that clears
-   * the Shanghai threshold, and a clean single-variable price for the d knob.
+   * v41 sits on the d axis with niter at the baseline 100: 17.3 s predicted,
+   * 2.56x, 11.98 of the 14 build points for zero reduction in refinement
+   * rounds. It is the second rung of the soft axis (v36 -> v41 -> v40), and
+   * exists to measure how much recall a narrower candidate pool actually
+   * costs before any round is removed.
    *
-   * 192 is not an arbitrary number: cagra.h requires intermediate >= graph, and
-   * calls 1.5x-2x of graph_degree good practice on a multiple of 32. graph is
-   * 128, so 192 is exactly the lower end of its own recommendation. */
-  h->ip->intermediate_graph_degree = 192;
+   * cagra.h requires intermediate >= graph (128) and calls 1.5x-2x good
+   * practice: 160 is 1.25x, below that recommendation but legal. 192 is the
+   * recommended lower edge, 144 (=1.125x) is the first point on the modelled
+   * curve that clears the 3.0x cap without touching niter. */
+  h->ip->intermediate_graph_degree = 160;
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
