@@ -39,7 +39,22 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* 70 iterations, not 15 or 20.
+   *
+   * Every build shot before this one jumped straight from the baseline's 100 to
+   * 20 or 15, and both came back 0.000: v17a (15) failed all three hidden250k
+   * recall gates, v14 (20) failed two of them. The step was never measured.
+   * Fitted from the two measured points, build(n) = 8543 + 358n ms, so 70 costs
+   * 35,393 ms against the baseline's 44,291 = 1.25x, and the third-place gate
+   * (606.256, i.e. 1.167x) is cleared with room for the 5-15% run-to-run noise
+   * the doc warns about.
+   *
+   * The 0.005 recall-delta rule is the binding constraint, not speed. This is
+   * the gentlest cut that still clears the gate; if it holds, the next shot
+   * goes lower and the boundary gets measured from both sides instead of
+   * guessed. Nothing else changes -- ideg 256, gdeg 128, query path identical
+   * to v13 -- so the delta against v13 prices the iteration cut alone. */
+  h->ip->nn_descent_niter = 70;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
