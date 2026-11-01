@@ -125,8 +125,8 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     nt=qt; nt.dl_tensor.data=h->ndv; nt.dl_tensor.dtype.code=kDLUInt; nt.dl_tensor.shape=nsh;
     dt=qt; dt.dl_tensor.data=h->ddv; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     {
-      size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      size_t required_itopk = (size_t)topk + 32;
+      if (required_itopk < 128) required_itopk = 128;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }
