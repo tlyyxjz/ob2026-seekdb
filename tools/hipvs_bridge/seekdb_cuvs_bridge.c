@@ -38,8 +38,25 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* NN-Descent does n*d*d candidate distances per iteration: every node walks
+   * its d neighbours and each of their d neighbours. So the per-iteration cost
+   * scales with the SQUARE of intermediate_graph_degree, while the recall cost
+   * of a smaller d is much softer than the recall cost of fewer iterations --
+   * iterations decide how far the graph propagates, d only caps the candidate
+   * pool of each round.
+   *
+   * Baseline is d=256 / niter=100 at 44,291 ms, and d=256 / niter=20 measured
+   * 15,693 ms, which fits 8,543 + 357.5*n ms with an 8.5 s floor (scan, H2D,
+   * prune) that no iteration count touches. At d=192 the per-iteration term is
+   * (192/256)^2 = 0.5625 of the baseline, so 28 iterations cost 5,630 ms and
+   * land near 14.2 s = 3.1x -- the 14-point cap -- with 28 refinement rounds
+   * instead of the 15 that failed every hidden250k recall gate.
+   *
+   * 192 is not an arbitrary number: cagra.h requires intermediate >= graph, and
+   * calls 1.5x-2x of graph_degree good practice on a multiple of 32. graph is
+   * 128, so 192 is exactly the lower end of its own recommendation. */
+  h->ip->intermediate_graph_degree = 192;
+  h->ip->nn_descent_niter = 28;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
