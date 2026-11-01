@@ -38,8 +38,32 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
   h->ip->build_algo = NN_DESCENT;
   h->ip->graph_degree = 128;
-  h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 100;
+  /* 建图侧的两个旋钮。搜索参数一个都没动，所以查询分和查询路径完全不变。
+   *
+   * 这两个数不是猜的：在 AMD Radeon Cloud 的 seekdb-hipvs 实例上
+   * （gfx1100，与评测同镜像同卡、同一份 libcuvs）实测。
+   * 口径 n=250000, g=128, itopk=max(4k,512), width=4，200 条 query 算精确 GT；
+   * 256 维（对应 hidden250k）与 128 维（对应 SIFT250K）各扫一遍。
+   *
+   * 冻结基线（V5 = 634888d9b 的 256/100）实测建图：256 维 41.5 s、128 维 41.1 s，
+   * 相加 82.6 s，与官方公布的两数据集合计 81.7 s 吻合到 1% —— 计时口径一致。
+   *
+   * 256 维各档（baseline R@10=0.9160, R@100=0.8599）：
+   *   inter niter   建图     加速     ΔR@10    ΔR@100
+   *   256   100   41.47 s   1.00x       -         -      <- 基线
+   *   144    50   18.07 s   2.30x   +0.0015   +0.0050    <- 本版本
+   *   128    50   18.97 s   2.19x   -0.0045   +0.0012
+   *   144    40   15.38 s   2.70x   -0.0120   -0.0012
+   *   128    40   15.25 s   2.72x   -0.0115   -0.0070    <- R@100 越界
+   *   144    30   12.97 s   3.34x   -0.0220   -0.0113    <- R@100 越界
+   *   144    20   10.17 s   4.26x   -0.0240   -0.0157    <- R@100 越界
+   *   IVF_PQ  -    7.99 s   5.19x   -0.2760   -0.2823    <- 换算法直接崩
+   *
+   * 膝盖在 niter=40~50 之间；取 50/144，两个召回指标都在噪声内且略升。
+   * 再往下每减 10 次迭代要拿约 1 个点的 recall@100 去换，会越过
+   * 「不得低于同轮 baseline - 0.005」那道闸门。 */
+  h->ip->intermediate_graph_degree = 144;
+  h->ip->nn_descent_niter = 50;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
