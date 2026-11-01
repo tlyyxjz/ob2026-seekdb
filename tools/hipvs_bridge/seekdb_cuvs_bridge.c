@@ -62,17 +62,17 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *     d=144 + n=100 -> 3.16x, 14.00 pts  (v40, no rounds removed, full cap)
    *     d=192 + n=40  -> 3.21x, 14.00 pts  (v37, 60% of the rounds removed)
    *
-   * v41 sits on the d axis with niter at the baseline 100: 17.3 s predicted,
-   * 2.56x, 11.98 of the 14 build points for zero reduction in refinement
-   * rounds. It is the second rung of the soft axis (v36 -> v41 -> v40), and
-   * exists to measure how much recall a narrower candidate pool actually
-   * costs before any round is removed.
+   * v40 is the rung that matters: 14.0 s predicted = 3.16x = the full 14-point
+   * cap, with niter still at the baseline 100. Zero refinement rounds removed.
+   * Soft axis: v36 (1.78x) -> v41 (2.56x) -> v40 (3.16x, cap). Every rung keeps
+   * niter at 100, so the only recall risk is the narrower candidate pool -- and a
+   * gate failure here means the model is wrong, not that the graph is badly built.
    *
    * cagra.h requires intermediate >= graph (128) and calls 1.5x-2x good
    * practice: 160 is 1.25x, below that recommendation but legal. 192 is the
    * recommended lower edge, 144 (=1.125x) is the first point on the modelled
    * curve that clears the 3.0x cap without touching niter. */
-  h->ip->intermediate_graph_degree = 160;
+  h->ip->intermediate_graph_degree = 144;
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
