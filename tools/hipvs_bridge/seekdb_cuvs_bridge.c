@@ -59,8 +59,8 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *     d=192 + n=44 hits 3.02x  -> only 56% of the rounds removed
    *     d=192 + n=40 hits 3.22x  -> the point this branch picks in v37
    *
-   * v36 itself keeps niter at the baseline 100 and only shrinks d to 192:
-   * 24.9 s = 1.78x, i.e. 7.35 of the 14 build points, with zero reduction in
+   * v39 keeps d at 192 and cuts niter to 70 -- the safety net between v36 (no
+   * round cut, 1.78x) and v37 (n=40, 3.22x). 19.8 s = 2.24x, 10.3 build points,
    * refinement rounds -- the cheapest way to bank a safe positive that clears
    * the Shanghai threshold, and a clean single-variable price for the d knob.
    *
@@ -68,7 +68,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * calls 1.5x-2x of graph_degree good practice on a multiple of 32. graph is
    * 128, so 192 is exactly the lower end of its own recommendation. */
   h->ip->intermediate_graph_degree = 192;
-  h->ip->nn_descent_niter = 100;
+  h->ip->nn_descent_niter = 70;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
