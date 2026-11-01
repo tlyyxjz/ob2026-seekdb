@@ -64,8 +64,8 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 被更密的图整个补回来还多赚一点 —— 实测两个数据集上 R@100 都高于基线。
    * graph_degree 只影响最后剪枝与搜索密度，几乎不花建图时间（34/34 两档
    * 建图差 2%），显存也只涨 1.125x，在 1.25x 门槛内。 */
-  h->ip->graph_degree = 144;
-  h->ip->intermediate_graph_degree = 144;
+  h->ip->graph_degree = 192;
+  h->ip->intermediate_graph_degree = 192;
   h->ip->nn_descent_niter = 32;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
