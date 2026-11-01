@@ -50,7 +50,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * fires here and 100 is 5x the iterations. Locally measured 44,291 -> 15,693
    * ms (2.82x) at ideg 256, with R@10/R@100 both 0.9999 on SIFT250K. */
   h->ip->intermediate_graph_degree = 256;
-  h->ip->nn_descent_niter = 20;
+  h->ip->nn_descent_niter = 16;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
