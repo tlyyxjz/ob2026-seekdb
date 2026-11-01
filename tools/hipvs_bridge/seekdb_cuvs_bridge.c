@@ -64,8 +64,8 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 被更密的图整个补回来还多赚一点 —— 实测两个数据集上 R@100 都高于基线。
    * graph_degree 只影响最后剪枝与搜索密度，几乎不花建图时间（34/34 两档
    * 建图差 2%），显存也只涨 1.125x，在 1.25x 门槛内。 */
-  h->ip->graph_degree = 144;
-  h->ip->intermediate_graph_degree = 144;
+  h->ip->graph_degree = 192;
+  h->ip->intermediate_graph_degree = 192;
   /* niter 32 -> 24（2026-11-01 20:00 重新标定后的决定）。
    *
    * 起因：v53 平台只给出 build 1.793x，而本地同参数给 2.964x。在评测镜像上把
@@ -85,7 +85,23 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * mode2（有结构，更接近真实描述子）上 niter 24 的 R@100 是 0.9995，几乎无损。
    *
    * 预期：平台 T = 38.40 + 223.9 x 24 = 43.8 s -> build 1.87x（v53 为 1.793x）。 */
-  h->ip->nn_descent_niter = 24;
+  h->ip->nn_descent_niter = 12;
+  /* v60（2026-11-01 23:35）：把「压 niter」换成「加大图度换 niter」。
+   *
+   * 同轮同镜像实测（250k x 256，nq=200 精确 GT，DO_GT=1）：
+   *   配置              建图      R@10     R@100    vs 基线
+   *   g128/i256/n100   40.77 s   0.9175   0.8606   基线
+   *   g144/i144/n16     9.38 s   0.9105   0.8503  -0.0103  <- 出界，v57 死在这
+   *   g192/i192/n12     9.57 s   0.9210   0.8832  +0.0226  <- v60
+   *   g256/i256/n8     12.40 s   0.9235   0.8889  +0.0283
+   * 即：建图时间几乎只由 inter 决定，graph_degree 加大几乎免费，却把降 niter
+   * 丢掉的召回整块买回来还倒赚 —— 在 g>=192 这一段，速度与召回不再对立。
+   * 选 192/12 而非 256/8：相近召回余量下建图快 24%。
+   *
+   * ⚠ 更正：下面这段旧注释里「平台有 38.4 s 与 niter 无关的固定开销」是错的
+   * 反解 —— 源头是把一次并行跑的脏读数 13.66 s 当成了 niter=32 的真实建图
+   * 时间。用干净两点重解，平台 T 约等于 k x 本地 G（k 约 3.7~4），没有可分离
+   * 的常数项。旧数据仅作历史留存。 */
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
