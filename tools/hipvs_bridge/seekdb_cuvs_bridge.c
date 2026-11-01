@@ -133,7 +133,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       size_t required_itopk = (size_t)topk * 4;
       if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
-      h->sp->search_width = 4;
+      h->sp->search_width = 8;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
