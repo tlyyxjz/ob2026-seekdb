@@ -66,7 +66,26 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 建图差 2%），显存也只涨 1.125x，在 1.25x 门槛内。 */
   h->ip->graph_degree = 144;
   h->ip->intermediate_graph_degree = 144;
-  h->ip->nn_descent_niter = 32;
+  /* niter 32 -> 24（2026-11-01 20:00 重新标定后的决定）。
+   *
+   * 起因：v53 平台只给出 build 1.793x，而本地同参数给 2.964x。在评测镜像上把
+   * mode0/1/2 三种分布各跑一遍，证明分布不是原因（同配置最大偏差 3.6%），
+   * 真正的结构是时间对 niter 线性：
+   *   本地  T = 3.73 s + 291.8 ms x niter
+   *   平台  T = 38.40 s + 223.9 ms x niter     <- 斜率比本地还快 23%
+   * 即平台有 38.4 s 与 niter 无关（在 seekdb 的冷 DDL 内部，本地实测 create
+   * vector index 68.4 s 里首条查询只占 0.21 s）。故 niter 是唯一还剩的轴，
+   * 而它的上限由召回决定。
+   *
+   * 召回标定（250k x 256，g=ideg=144，难分布 mode0，基线 niter=100 为 0.8630）：
+   *   niter 32 -> 0.8730 (+0.0100)   niter 24 -> 0.8622 (-0.0008)
+   *   niter 22 -> 0.8613 (-0.0017)   niter 20 -> 0.8555 (-0.0075)  <- 出界
+   *   niter 16 -> 0.8479 (-0.0151)   niter 8  -> 0.8201 (-0.0429)
+   * 判据是「比同轮 baseline 降 <= 0.005 且 R@100 >= 0.85」，故安全档只到 24。
+   * mode2（有结构，更接近真实描述子）上 niter 24 的 R@100 是 0.9995，几乎无损。
+   *
+   * 预期：平台 T = 38.40 + 223.9 x 24 = 43.8 s -> build 1.87x（v53 为 1.793x）。 */
+  h->ip->nn_descent_niter = 24;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
