@@ -72,6 +72,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * practice: 160 is 1.25x, below that recommendation but legal. 192 is the
    * recommended lower edge, 144 (=1.125x) is the first point on the modelled
    * curve that clears the 3.0x cap without touching niter. */
+  /* 2026-11-01 11:40 v40 + itopk 512->384：只动查询队列深度，建图与 v40 逐字节相同 */
   h->ip->intermediate_graph_degree = 144;
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
@@ -131,7 +132,7 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
     dt=qt; dt.dl_tensor.data=h->ddv; dt.dl_tensor.dtype.code=kDLFloat; dt.dl_tensor.shape=dsh;
     {
       size_t required_itopk = (size_t)topk * 4;
-      if (required_itopk < 512) required_itopk = 512;
+      if (required_itopk < 384) required_itopk = 384;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }
