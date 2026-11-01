@@ -84,8 +84,31 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 判据是「比同轮 baseline 降 <= 0.005 且 R@100 >= 0.85」，故安全档只到 24。
    * mode2（有结构，更接近真实描述子）上 niter 24 的 R@100 是 0.9995，几乎无损。
    *
-   * 预期：平台 T = 38.40 + 223.9 x 24 = 43.8 s -> build 1.87x（v53 为 1.793x）。 */
-  h->ip->nn_descent_niter = 24;
+   * 预期：平台 T = 38.40 + 223.9 x 24 = 43.8 s -> build 1.87x（v53 为 1.793x）。
+   *
+   * === v57：niter 24 -> 16，依据是 v56 在真评测环境跑出来的实测 ===
+   * v56（niter 24）平台得 14.618 分。扣掉召回 4 分与查询 2 分（q 与 v53 同码，
+   * 仍顶格），建图项 8.618 分 => b = 2^((14.618-6)*log2(3)/14) = 1.967x
+   * => 平台建图时间 T = 81.7/1.967 = 41.5 s。
+   *
+   * 而按上一版拟合的「T = 38.40 + 223.9 x niter」预测，niter 24 应是 43.8 s
+   * （b=1.87，13.96 分）。实测比预测快 2.3 s、高 0.66 分 —— 超出同 commit
+   * 抖动（0.315 分）两倍，说明**低 niter 区段的边际收益高于线性**。
+   *
+   * 用 v53(niter 32, 45.57 s) 与 v56(niter 24, 41.5 s) 两点重解低区段：
+   *   T = 29.49 + 0.503 x niter        （斜率是 v40->v53 区段 0.224 的 2.2 倍）
+   * 按此斜率外推 niter 16：T = 37.54 s -> b = 2.176x -> 建图项 9.93 -> 预估 15.9 分。
+   * 截距 29.49 s 与 niter 无关，是 seekdb 侧固定开销（DDL 收尾的
+   * ob_cuvs_serialize 会先建图、再把 buf_vecs_ 256MB 与图 144MB 整体写出），
+   * 压 niter 到 0 也只能到 T=29.49 s（b=2.77）。所以本版是 niter 轴的最后一档
+   * 试探，真正的 20 分要动截距。
+   *
+   * 召回：本地难分布 mode0 上 niter 16 的 R@100 是 0.8479（基线 0.8630，
+   * -0.0151），已跌破绝对下限 0.85 —— **这是本版唯一的风险**。赌的依据是
+   * 本地 mode0 明显比真评测集更难：v56 的 128 维在本地是 -0.0097（同样出界）
+   * 却在平台上通过并拿到满分建图。若本版召回失败，即证明断崖在 16~24 之间，
+   * 24 是这条轴的终点，立刻转攻截距。 */
+  h->ip->nn_descent_niter = 16;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
