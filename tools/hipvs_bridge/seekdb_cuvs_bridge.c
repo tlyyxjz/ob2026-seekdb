@@ -115,8 +115,8 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
        * iteration, so that is the likelier culprit and it is not touched here.
        * Build is untouched at niter 100, so any score delta vs v13 is the query
        * lever alone. */
-      size_t required_itopk = (size_t)topk + 32;
-      if (required_itopk < 128) required_itopk = 128;
+      size_t required_itopk = (size_t)topk + 156;
+      if (required_itopk < 256) required_itopk = 256;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       h->sp->search_width = 4;
     }
