@@ -72,8 +72,9 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * practice: 160 is 1.25x, below that recommendation but legal. 192 is the
    * recommended lower edge, 144 (=1.125x) is the first point on the modelled
    * curve that clears the 3.0x cap without touching niter. */
+  /* 2026-11-01 11:40 d144 + n55：线性代价模型下的建图满分档（3.0x） */
   h->ip->intermediate_graph_degree = 144;
-  h->ip->nn_descent_niter = 100;
+  h->ip->nn_descent_niter = 55;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_sp;
