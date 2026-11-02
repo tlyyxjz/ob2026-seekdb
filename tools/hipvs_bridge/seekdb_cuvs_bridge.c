@@ -127,7 +127,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 256d（g144，需求：本地 R@100 > .8484，即平台已验证过线的 v57 值）：
    *   n10/sr4 .8465 | n13/sr4 .8498 | n14/sr4 .8509 | n10/sr16 .8600
    *   n8 .8276(平台挂) n10 .8415(挂) n10+旋钮 .8439(v68 挂) ⇒ 门禁在 (.8439, .8484] */
-  h->ip->nn_descent_niter = (dim <= 128) ? 5 : 13;
+  h->ip->nn_descent_niter = (dim <= 128) ? 5 : 16;
   /* === v68（2026-11-02 09:4x）：256维 n16->n10，128维 n16->n6，并启用查询侧双旋钮 ===
    * 【v67 的教训】v67（256维 n8）平台 0 分，failMsg =
    *   `gates failed: hidden250k:recall@100_baseline_delta`
@@ -241,10 +241,21 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
        * ⚠ hfill 与 srand 必须成对给非零值：任一为 0 会让 cuVS 自动分支失效、召回直接归零。
        * ⚠ hashmap_min_bitlen / thread_block_size / team_size 均已实测无效或直接崩
        *   （tbsize64 与 hteam4 召回 0.0000），不要碰。 */
-      h->sp->search_width = 16;
-      h->sp->hashmap_max_fill_rate = 0.85f;
-      h->sp->hashmap_mode = SMALL;
-      h->sp->num_random_samplings = (h->dim <= 128) ? 64 : 4;
+      if (h->dim <= 128) {
+        h->sp->search_width = 16;
+        h->sp->hashmap_max_fill_rate = 0.85f;
+        h->sp->hashmap_mode = SMALL;
+        h->sp->num_random_samplings = 48;
+      } else {
+        /* 256 维完全回到 v57 的口径，不再动 —— v57 是唯一被测出 query=1.600x 且
+         * gates=pass 的组合，而平台的 query 对 sw/srand 的反应与本地相反：
+         *   v57  sw4                    query 1.600x
+         *   v65  sw16                   query 1.579x
+         *   v71  sw16+hfill.85+srand4   query 1.459x
+         * 即 sw16 已略亏、再加 hfill/srand 更亏，与本地实测（sw16 更快、
+         * srand 越大越快）完全相反。所以 256 维一律用 cuVS 默认值。 */
+        h->sp->search_width = 4;
+      }
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
