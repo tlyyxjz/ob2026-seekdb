@@ -108,7 +108,17 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 本地 mode0 明显比真评测集更难：v56 的 128 维在本地是 -0.0097（同样出界）
    * 却在平台上通过并拿到满分建图。若本版召回失败，即证明断崖在 16~24 之间，
    * 24 是这条轴的终点，立刻转攻截距。 */
-  h->ip->nn_descent_niter = 16;
+  /* v79：**只降 128 维**的轮数，256 维保持 16 不动。
+   *
+   * 依据（都是实测读数，不是推的）：
+   *   - 256d 平台 R@100 = .8499，绝对线 .85 ⇒ 余量 0.000，n13 起全线跨线
+   *     （n12 .8474、n10 .8415、n8 .8276，v68/v69/v67 三次实测挂）⇒ 一个字不能动。
+   *   - 128d 平台 R@100 = .9624，线 .95 ⇒ 余量 .014，是唯一还有空间的一侧。
+   *   - 窗口合计 27.83 s（=81.7/2.936），到 b=3.0 只差 0.60 s。
+   *
+   * 风险与自检：128d 的 niter 斜率/召回此前从未单独量过（44.3 的曲线是 256d 的）。
+   * 由 sweep23 给出 n13 的实测 R@100；若 < .955 则不要用本版，改投 v77。 */
+  h->ip->nn_descent_niter = (dim <= 128) ? 13 : 16;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
