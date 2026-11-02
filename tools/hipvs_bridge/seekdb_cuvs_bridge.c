@@ -108,7 +108,22 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 本地 mode0 明显比真评测集更难：v56 的 128 维在本地是 -0.0097（同样出界）
    * 却在平台上通过并拿到满分建图。若本版召回失败，即证明断崖在 16~24 之间，
    * 24 是这条轴的终点，立刻转攻截距。 */
-  h->ip->nn_descent_niter = 16;
+  /* === v67（2026-11-02 08:0x）：回到 g144，只给 256 维降 niter ===
+   * 【决策依据】v65 平台实测 15.449 分（b=2.099），低于 v57 的 16.376（b=2.257）。
+   * v65 相对 v57 改了 g144->192 与 niter16->8。若 g192 中性，按 g144 族
+   * n32->n24->n16 的斜率（b 分别 1.794/1.967/2.257，每减 8 轮至少 x1.148），
+   * n8 应达 b=2.59；实测只有 2.099 => 反解平台侧建图 12.00 s，
+   * 比 v57 的 11.16 s 还慢 0.84 s。
+   * ⇒ **g 从 144 加到 192 在平台侧是负收益**，而本地 bench 给的 8.4 s 是无效预测
+   *   （本地建图时间不能外推到平台，这条已记入台账 41.9 之后）。
+   *
+   * 【本版】g/i 回到 144/144（v57 原值），128 维保持 niter=16（= v57 精确口径，
+   * 平台已实测通过召回门禁：本地 SIFT -0.0040、Hidden -0.0113），
+   * 只把 256 维降到 niter=8。SIFT 侧召回与 v57 逐位相同，风险不增加；
+   * 按 T=6.38+0.299*n 估，Hidden 建图 11.16 -> 8.77 s。
+   * ⚠ 以下历史注释中的「81.7 s 基线」「29.49 s 截距」来自二手推算，已被官方赛题
+   * 原文（SIFT 20~27 s / Hidden 29~35 s）推翻，不要再用。 */
+  h->ip->nn_descent_niter = (dim <= 128) ? 16 : 8;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
