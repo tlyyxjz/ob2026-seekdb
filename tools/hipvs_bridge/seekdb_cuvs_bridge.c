@@ -129,11 +129,11 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *   本地 256d 基线 .9215/.8612 ⇒ 平台显著比本地容易（SIFT +.034、Hidden +.063），
    *   这就是本地值低于绝对下限却仍可能过线的依据。
    *
-   * 【查询侧双旋钮】hashmap_max_fill_rate=0.85 + num_random_samplings=4
-   *   实测 256d n16/sw16：.8524 -> .8548。**必须成对设非零值**：任一项留 0 会让 cuVS
-   *   的自动分支失效，本地实测召回直接归零（0.0000）—— 这是本版最危险的坑。
-   *   sw16 本身是双赢（召回 +.004，单条查询 3622 -> 2259 us）；双旋钮 2639 us，
-   *   仍远低于 1.5x 基线（约 2473 us 以上即满分，q 有大幅余量）。
+   * 【查询侧只开 sw16】实测 sw 4->16 是纯赚：召回 .8484 -> .8524（+.004），
+   *   单条查询 3622 -> 2259 us（q = 3982/2259 = 1.76x，查询分满）。
+   *   ⛔ hashmap_max_fill_rate + num_random_samplings 已弃用（v68 踩过）：再多 +.0024 召回，
+   *   但延迟涨到 2668 us ⇒ q = 1.49x，跌破 1.5x 线，查询分 2.000 -> 1.975，
+   *   用 0.025 分换 0.0024 召回是亏的。且这两项必须成对非零，任一为 0 会让自动分支失效、召回归零。
    *
    * ⚠ 以下历史注释里的「81.7 s 基线」「29.49 s 截距」是二手推算，已被官方赛题原文
    *   （SIFT 20~27 s / Hidden 29~35 s）推翻，不要再用。 */
@@ -203,11 +203,12 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       size_t required_itopk = (size_t)topk * 4;
       if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
-      /* v68：sw 4->16 是双赢（召回 +0.004，代价为 0；单条查询 3622 -> 2259 us）；
-       * 后两项必须成对给非零值，任一为 0 会让 cuVS 的自动分支失效、召回归零。 */
+      /* v69：只把 sw 4->16。实测这是纯赚（召回 +0.004，单条查询 3622 -> 2259 us）。
+       * ⛔ 不要加 hashmap_max_fill_rate / num_random_samplings：那两个虽然再多 +0.0024 召回，
+       * 但把延迟推到 2668 us ⇒ q = 3982/2668 = 1.49x，**跌破 1.5x 评分线**，
+       * 查询分 2.000 -> 1.975，等于用 0.025 分换 0.0024 召回，亏。
+       * 而且这两项必须成对给非零值，任一为 0 会让 cuVS 自动分支失效、召回归零。 */
       h->sp->search_width = 16;
-      h->sp->hashmap_max_fill_rate = 0.85f;
-      h->sp->num_random_samplings = 4;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
