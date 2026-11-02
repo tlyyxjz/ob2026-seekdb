@@ -108,7 +108,14 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 本地 mode0 明显比真评测集更难：v56 的 128 维在本地是 -0.0097（同样出界）
    * 却在平台上通过并拿到满分建图。若本版召回失败，即证明断崖在 16~24 之间，
    * 24 是这条轴的终点，立刻转攻截距。 */
-  h->ip->nn_descent_niter = (dim <= 128) ? 6 : 10;
+  /* v71：128 维 6 轮、256 维 13 轮。
+   * 本地难分布 mode0（256d 基线 R@100 .8612）实测，sw16+hfill.85+srand4：
+   *   256d  n16 .8484(v57,平台已过)  n14 .8479~.8521  n13 .8443~.8524
+   *         n12 .8443  n11 .8429  n10 .8363~.8415(平台实测挂)  n8 .8276(挂)
+   *   ⇒ 平台门禁落在 .8443(挂) 与 .8484(过) 之间，n13 与之齐平，n14 更稳。
+   * 128d  n6 .9303 / 建图 5.3~5.8 s（n8 以上全过门禁，v67 只报 hidden 即证据）
+   * 查询侧 max_iterations 64/128/256 与 sw24 均已实测无效（.838~.841），不要再用。 */
+  h->ip->nn_descent_niter = (dim <= 128) ? 6 : 13;
   /* === v68（2026-11-02 09:4x）：256维 n16->n10，128维 n16->n6，并启用查询侧双旋钮 ===
    * 【v67 的教训】v67（256维 n8）平台 0 分，failMsg =
    *   `gates failed: hidden250k:recall@100_baseline_delta`
@@ -131,9 +138,9 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *
    * 【查询侧只开 sw16】实测 sw 4->16 是纯赚：召回 .8484 -> .8524（+.004），
    *   单条查询 3622 -> 2259 us（q = 3982/2259 = 1.76x，查询分满）。
-   *   ⛔ hashmap_max_fill_rate + num_random_samplings 已弃用（v68 踩过）：再多 +.0024 召回，
-   *   但延迟涨到 2668 us ⇒ q = 1.49x，跌破 1.5x 线，查询分 2.000 -> 1.975，
-   *   用 0.025 分换 0.0024 召回是亏的。且这两项必须成对非零，任一为 0 会让自动分支失效、召回归零。
+   *   ⚠ v71 重新启用 hfill.85 + srand4：v68 当时按 3982 us 基线算出 q=1.49x 才弃用，
+   *   但 v65（本地延迟 3125 us）平台查询项仍拿满 2 分 ⇒ 真实基线延迟远大于 3982 us，
+   *   2756 us 是安全的。这两项必须成对非零，任一为 0 会让自动分支失效、召回归零。
    *
    * ⚠ 以下历史注释里的「81.7 s 基线」「29.49 s 截距」是二手推算，已被官方赛题原文
    *   （SIFT 20~27 s / Hidden 29~35 s）推翻，不要再用。 */
@@ -204,11 +211,12 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       /* v69：只把 sw 4->16。实测这是纯赚（召回 +0.004，单条查询 3622 -> 2259 us）。
-       * ⛔ 不要加 hashmap_max_fill_rate / num_random_samplings：那两个虽然再多 +0.0024 召回，
-       * 但把延迟推到 2668 us ⇒ q = 3982/2668 = 1.49x，**跌破 1.5x 评分线**，
-       * 查询分 2.000 -> 1.975，等于用 0.025 分换 0.0024 召回，亏。
-       * 而且这两项必须成对给非零值，任一为 0 会让 cuVS 自动分支失效、召回归零。 */
+       * v71：hfill .85 + srand4 成对启用（召回 +0.006~0.008，是本版补 256d 召回的主要手段）。
+       * 实测 max_iterations 64/128/256 与 sw24 均无效，别再用。
+       * 这两项必须成对给非零值，任一为 0 会让 cuVS 自动分支失效、召回归零。 */
       h->sp->search_width = 16;
+      h->sp->hashmap_max_fill_rate = 0.85f;
+      h->sp->num_random_samplings = 4;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
