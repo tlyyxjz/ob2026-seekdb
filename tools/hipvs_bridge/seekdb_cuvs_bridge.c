@@ -64,8 +64,8 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 被更密的图整个补回来还多赚一点 —— 实测两个数据集上 R@100 都高于基线。
    * graph_degree 只影响最后剪枝与搜索密度，几乎不花建图时间（34/34 两档
    * 建图差 2%），显存也只涨 1.125x，在 1.25x 门槛内。 */
-  h->ip->graph_degree = 144;
-  h->ip->intermediate_graph_degree = 144;
+  h->ip->graph_degree = (dim <= 128) ? 128 : 144;
+  h->ip->intermediate_graph_degree = (dim <= 128) ? 256 : 144;
   /* niter 32 -> 24（2026-11-01 20:00 重新标定后的决定）。
    *
    * 起因：v53 平台只给出 build 1.793x，而本地同参数给 2.964x。在评测镜像上把
@@ -108,7 +108,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 本地 mode0 明显比真评测集更难：v56 的 128 维在本地是 -0.0097（同样出界）
    * 却在平台上通过并拿到满分建图。若本版召回失败，即证明断崖在 16~24 之间，
    * 24 是这条轴的终点，立刻转攻截距。 */
-  h->ip->nn_descent_niter = 16;
+  h->ip->nn_descent_niter = (dim <= 128) ? 100 : 16;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
   if (cuvsCagraSearchParamsCreate(&h->sp) != CUVS_SUCCESS) goto fail_idx;
   /* cuvsCagraSearchParamsCreate 的默认 algo 是 SINGLE_CTA（枚举值 0），而评测跑的
