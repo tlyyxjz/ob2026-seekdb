@@ -127,7 +127,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 256d（g144，需求：本地 R@100 > .8484，即平台已验证过线的 v57 值）：
    *   n10/sr4 .8465 | n13/sr4 .8498 | n14/sr4 .8509 | n10/sr16 .8600
    *   n8 .8276(平台挂) n10 .8415(挂) n10+旋钮 .8439(v68 挂) ⇒ 门禁在 (.8439, .8484] */
-  h->ip->nn_descent_niter = (dim <= 128) ? 5 : 16;
+  h->ip->nn_descent_niter = (dim <= 128) ? 6 : 16;
   /* === v68（2026-11-02 09:4x）：256维 n16->n10，128维 n16->n6，并启用查询侧双旋钮 ===
    * 【v67 的教训】v67（256维 n8）平台 0 分，failMsg =
    *   `gates failed: hidden250k:recall@100_baseline_delta`
