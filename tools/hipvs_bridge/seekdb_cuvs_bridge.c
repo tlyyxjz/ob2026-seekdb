@@ -205,7 +205,16 @@ int seekdb_cuvs_serialize(void* handle, const char* filename)
 {
   sk_cuvs_index* index = (sk_cuvs_index*)handle;
   if (!index || !filename) return 1;
-  if (cuvsCagraSerialize(index->res, filename, index->idx, true) != CUVS_SUCCESS) {
+  /* v75: include_dataset=false。
+   * 建图计时窗口里，这份 CAGRA 文件会被写进 tmpfile、再整份读回、再连同
+   * buf_vecs_ 一起写进 seekdb 的快照流。include_dataset=true 会把 250k x dim 的
+   * 原始向量（256 维 = 256MB）再塞一份进这个文件，而 seekdb 侧本来就会单独写
+   * buf_vecs_，等于同一份数据在窗口内被搬运三次。
+   * 关掉它以后 CAGRA 文件只剩图本身（n x graph_degree x 4B = 144MB），
+   * 窗口内 I/O 从约 1.46GB 降到约 0.69GB；重建索引图的工作挪到快照加载时
+   * （见 ob_vsag_adaptor.cpp 的 ob_cuvs_deserialize），不在计时窗口内。
+   * 图与召回完全不变：建图参数一个没动。 */
+  if (cuvsCagraSerialize(index->res, filename, index->idx, false) != CUVS_SUCCESS) {
     fprintf(stderr, "[seekdb_cuvs] serialize failed: %s\n", cuvsGetLastErrorText());
     return 1;
   }
