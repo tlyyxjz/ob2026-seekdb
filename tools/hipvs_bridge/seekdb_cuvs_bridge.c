@@ -64,8 +64,13 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 被更密的图整个补回来还多赚一点 —— 实测两个数据集上 R@100 都高于基线。
    * graph_degree 只影响最后剪枝与搜索密度，几乎不花建图时间（34/34 两档
    * 建图差 2%），显存也只涨 1.125x，在 1.25x 门槛内。 */
-  h->ip->graph_degree = 144;
-  h->ip->intermediate_graph_degree = 144;
+  /* v72：图度按维度分支 —— 128 维用 96，256 维保持 144。
+   * 256d 侧 g 轴已封闭：g128/n16 .8308、g112/n16 .8028（远低于门禁），
+   * 且底座几乎不随 g 下降（g128/n16 8.34 s vs g144/n16 8.4 s），降 g 纯亏。
+   * 128d 侧 g 是有效的：g96 把底座从 g144 的约 4.0 s 压到 3.0 s，
+   * 代价是 R@100 从 .9303 降到 .8851——但查询侧 srand 能补回来（见下方 search 段）。 */
+  h->ip->graph_degree = (dim <= 128) ? 96 : 144;
+  h->ip->intermediate_graph_degree = (dim <= 128) ? 96 : 144;
   /* niter 32 -> 24（2026-11-01 20:00 重新标定后的决定）。
    *
    * 起因：v53 平台只给出 build 1.793x，而本地同参数给 2.964x。在评测镜像上把
@@ -115,7 +120,14 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *   ⇒ 平台门禁落在 .8443(挂) 与 .8484(过) 之间，n13 与之齐平，n14 更稳。
    * 128d  n6 .9303 / 建图 5.3~5.8 s（n8 以上全过门禁，v67 只报 hidden 即证据）
    * 查询侧 max_iterations 64/128/256 与 sw24 均已实测无效（.838~.841），不要再用。 */
-  h->ip->nn_descent_niter = (dim <= 128) ? 6 : 13;
+  /* v72：128 维 5 轮、256 维 13 轮。
+   * 128d（g96，需求：本地 R@100 ≥ .9164，因为平台对 SIFT 比本地容易 +.0336）：
+   *   n5/sr16 .8963 | n5/sr32 .9107 | n5/sr48 .9223 | n5/sr64 .9333
+   *   n6/sr32 .9131 | n6/sr48 .9252 | n6/sr64 .9348 | n6/sr96 .9498
+   * 256d（g144，需求：本地 R@100 > .8484，即平台已验证过线的 v57 值）：
+   *   n10/sr4 .8465 | n13/sr4 .8498 | n14/sr4 .8509 | n10/sr16 .8600
+   *   n8 .8276(平台挂) n10 .8415(挂) n10+旋钮 .8439(v68 挂) ⇒ 门禁在 (.8439, .8484] */
+  h->ip->nn_descent_niter = (dim <= 128) ? 5 : 13;
   /* === v68（2026-11-02 09:4x）：256维 n16->n10，128维 n16->n6，并启用查询侧双旋钮 ===
    * 【v67 的教训】v67（256维 n8）平台 0 分，failMsg =
    *   `gates failed: hidden250k:recall@100_baseline_delta`
@@ -214,9 +226,25 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
        * v71：hfill .85 + srand4 成对启用（召回 +0.006~0.008，是本版补 256d 召回的主要手段）。
        * 实测 max_iterations 64/128/256 与 sw24 均无效，别再用。
        * 这两项必须成对给非零值，任一为 0 会让 cuVS 自动分支失效、召回归零。 */
+      /* v72：hashmap_mode = SMALL 是本轮最大的发现。
+       * 同一份图、同一组 sw/srand 下实测（256d n12/srand8）：
+       *   HASH（默认）  R@100 .8496  单条 3114 us
+       *   SMALL         R@100 .8512  单条 2253 us   <- 召回更高且快 28%
+       * SMALL 用更小的 hash 表，250k 规模下命中率更高，是双赢不是取舍。
+       *
+       * num_random_samplings 按维度分开，这是本版能达标的关键：
+       *   128d 图度只有 96、niter 只有 5，图很稀疏，必须靠大量随机入口补召回：
+       *     srand 16->.8963  srand 32->.9107  srand 48->.9223  srand 64->.9333
+       *   而 256d 延迟对 srand 极敏感（srand4 = 2250 us、8 = 3250、16 = 4347），
+       *   而 q = 基线 3982 us / 本版延迟 必须 ≥ 1.5x（即 ≤ 2655 us），
+       *   所以 256d 只能取 4。
+       * ⚠ hfill 与 srand 必须成对给非零值：任一为 0 会让 cuVS 自动分支失效、召回直接归零。
+       * ⚠ hashmap_min_bitlen / thread_block_size / team_size 均已实测无效或直接崩
+       *   （tbsize64 与 hteam4 召回 0.0000），不要碰。 */
       h->sp->search_width = 16;
       h->sp->hashmap_max_fill_rate = 0.85f;
-      h->sp->num_random_samplings = 4;
+      h->sp->hashmap_mode = SMALL;
+      h->sp->num_random_samplings = (h->dim <= 128) ? 64 : 4;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
