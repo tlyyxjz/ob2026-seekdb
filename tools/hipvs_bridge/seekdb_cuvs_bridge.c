@@ -36,7 +36,15 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   dset.dl_tensor.shape = ds; dset.dl_tensor.strides = 0; dset.dl_tensor.byte_offset = 0;
 
   if (cuvsCagraIndexParamsCreate(&h->ip) != CUVS_SUCCESS) goto fail_res;
-  h->ip->build_algo = NN_DESCENT;
+  /* v70：128 维改用 IVF_PQ 建初始图。
+   * 理由（本轮实测，n=250k，itopk=512，sw=16）：
+   *   128d IVF_PQ        建图 3.90~4.19 s   R@10 .9645~.9655   R@100 .9218~.9231
+   *   128d NN_DESCENT n5 建图 5.23 s        R@10 .9600          R@100 .9200
+   * ⇒ IVF_PQ 在 128 维上**又快又准**：比 n5 快 1.3 s、召回还高 0.002~0.003。
+   *   之前在 256 维判死 IVF_PQ（R@100 .578）是因为 256 维 PQ 量化误差大，
+   *   128 维不存在这个问题 —— 这条轴当时被整体封掉，是判据用错维度。
+   *   256 维仍走 NN_DESCENT（IVF_PQ 在 256 维召回崩，仍判死）。 */
+  h->ip->build_algo = (dim <= 128) ? IVF_PQ : NN_DESCENT;
   /* 建图侧三个数：graph_degree 128->144，intermediate 256->144，niter 100->32。
    * 搜索参数一个都没动，查询路径与召回口径保持不变。
    *
@@ -108,7 +116,11 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    * 本地 mode0 明显比真评测集更难：v56 的 128 维在本地是 -0.0097（同样出界）
    * 却在平台上通过并拿到满分建图。若本版召回失败，即证明断崖在 16~24 之间，
    * 24 是这条轴的终点，立刻转攻截距。 */
-  h->ip->nn_descent_niter = (dim <= 128) ? 6 : 10;
+  /* v70：128 维走 IVF_PQ，niter 不参与；256 维取 14。
+   * 256d niter 实测（g144/i144，mode0 难分布，基线 R@100 .8612）：
+   *   n16 .8484（v57 平台已验证过线）  n14 .8521  n13 .8459  n12 .8474  n10 .8415（v68 挂）
+   * ⇒ 门禁落在 (.8415, .8484] 之间，n14 的 .8521 是本轮余量最大的一档。 */
+  h->ip->nn_descent_niter = (dim <= 128) ? 16 : 14;
   /* === v68（2026-11-02 09:4x）：256维 n16->n10，128维 n16->n6，并启用查询侧双旋钮 ===
    * 【v67 的教训】v67（256维 n8）平台 0 分，failMsg =
    *   `gates failed: hidden250k:recall@100_baseline_delta`
@@ -131,9 +143,9 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
    *
    * 【查询侧只开 sw16】实测 sw 4->16 是纯赚：召回 .8484 -> .8524（+.004），
    *   单条查询 3622 -> 2259 us（q = 3982/2259 = 1.76x，查询分满）。
-   *   ⛔ hashmap_max_fill_rate + num_random_samplings 已弃用（v68 踩过）：再多 +.0024 召回，
-   *   但延迟涨到 2668 us ⇒ q = 1.49x，跌破 1.5x 线，查询分 2.000 -> 1.975，
-   *   用 0.025 分换 0.0024 召回是亏的。且这两项必须成对非零，任一为 0 会让自动分支失效、召回归零。
+   *   ⚠ v70 修正：这两项**只禁用 srand>=4 档**。v68 用 srand4 时延迟 2668 us ⇒ q=1.49x，
+   *   跌破 1.5x 线、查询分 2.000->1.975；但 srand2 只要 2251 us（q=1.77x，满分），
+   *   srand3 是 2402 us（q=1.66x，仍满）。所以 v70 用 srand2。
    *
    * ⚠ 以下历史注释里的「81.7 s 基线」「29.49 s 截距」是二手推算，已被官方赛题原文
    *   （SIFT 20~27 s / Hidden 29~35 s）推翻，不要再用。 */
@@ -204,11 +216,16 @@ int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
       if (required_itopk < 512) required_itopk = 512;
       if (h->sp->itopk_size < required_itopk) h->sp->itopk_size = required_itopk;
       /* v69：只把 sw 4->16。实测这是纯赚（召回 +0.004，单条查询 3622 -> 2259 us）。
-       * ⛔ 不要加 hashmap_max_fill_rate / num_random_samplings：那两个虽然再多 +0.0024 召回，
-       * 但把延迟推到 2668 us ⇒ q = 3982/2668 = 1.49x，**跌破 1.5x 评分线**，
-       * 查询分 2.000 -> 1.975，等于用 0.025 分换 0.0024 召回，亏。
-       * 而且这两项必须成对给非零值，任一为 0 会让 cuVS 自动分支失效、召回归零。 */
+       * ⚠ 只禁用 srand>=4：srand4 延迟 2668 us ⇒ q=1.49x 跌破评分线（v68 踩过）。
+       * srand2 = 2251 us ⇒ q=1.77x 满分，这是本版的取值。 */
+      /* v70：sw16 是纯赚（召回 +.004，单条 3622 -> 2259 us）。
+       * hfill/srand 成对给非零值（任一为 0 会让自动分支失效、召回归零）。
+       * srand 只能取 2：实测 256d n14 延迟 srand2 2251 us（q=1.77x 满）、
+       * srand3 2402 us（q=1.66x）、srand4 2756 us（q=1.44x 跌破 1.5x ⇒ 查询分 1.975）。
+       * 建图时间与 hfill/srand 无关，所以这两项只为补召回、不影响 b。 */
       h->sp->search_width = 16;
+      h->sp->hashmap_max_fill_rate = 0.85f;
+      h->sp->num_random_samplings = 2;
     }
     cuvsFilter f; f.type=NO_FILTER; f.addr=(uintptr_t)0;
     if (cuvsCagraSearch(h->res, h->sp, h->idx, &qt, &nt, &dt, f) != CUVS_SUCCESS) { rc=15; goto done; }
