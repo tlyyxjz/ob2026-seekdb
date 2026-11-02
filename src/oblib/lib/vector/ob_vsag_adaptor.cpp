@@ -405,15 +405,28 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
     ent->bridge_ = nb; ent->built_n_ = n; ent->ids_ = ent->buf_ids_;
     built = true;
   }
+  // ==== v76：快照里不再写 CAGRA 图字节 ====
+  // 加载路径 ob_cuvs_deserialize 本来就是用 buf_vecs_ 在 GPU 上重建图，
+  // 这份图字节在 v75 里被读进来后直接 break 丢掉。所以窗口内这三笔搬运全是白工，
+  // 而且都在建图计时区间里：
+  //   1) cuvsCagraSerialize 把图从 device 拷回 host 再写 tmpfile   —— 144MB
+  //   2) fread 从 tmpfile 读回                                     —— 144MB
+  //   3) ob_cuvs_write 写进 seekdb 快照流                          —— 144MB
+  // graph_bytes 置 0 后三笔全免；建图参数、召回、查询一个都没动。
+  // 保留原路径并用常量开关，便于回滚（也避免 static 函数变成 unused 触发告警）。
+  static const bool kWriteGraphIntoSnapshot = false;
   ObCuvsSnapshotFile graph;
-  ObCuvsSnapshotJob job{graph.path_, ent->bridge_.get(), static_cast<long>(n), ent->dim_, false, -1};
-  if (graph.file_ == nullptr || !ob_cuvs_snapshot_big_stack(job) ||
-      ::fseeko(graph.file_, 0, SEEK_END) != 0 || ::ftello(graph.file_) <= 0) {
-    ret = OB_ERR_VSAG_RETURN_ERROR;
-    return true;
+  uint64_t graph_bytes = 0;
+  if (kWriteGraphIntoSnapshot) {
+    ObCuvsSnapshotJob job{graph.path_, ent->bridge_.get(), static_cast<long>(n), ent->dim_, false, -1};
+    if (graph.file_ == nullptr || !ob_cuvs_snapshot_big_stack(job) ||
+        ::fseeko(graph.file_, 0, SEEK_END) != 0 || ::ftello(graph.file_) <= 0) {
+      ret = OB_ERR_VSAG_RETURN_ERROR;
+      return true;
+    }
+    graph_bytes = static_cast<uint64_t>(::ftello(graph.file_));
+    ::rewind(graph.file_);
   }
-  const uint64_t graph_bytes = static_cast<uint64_t>(::ftello(graph.file_));
-  ::rewind(graph.file_);
   const int64_t build_us = ObTimeUtility::current_time() - start_us;
   const int32_t dim32 = ent->dim_;
   const int32_t reserved = 0;
@@ -458,7 +471,8 @@ static int ob_cuvs_deserialize(void *key, int expected_dim, std::istream &in) {
   } else if (dim32 <= 0 || dim32 != expected_dim || reserved != 0 || n64 <= 0 ||
              n64 > UINT32_MAX ||
              static_cast<uint64_t>(n64) > std::numeric_limits<size_t>::max() / sizeof(float) / dim32 ||
-             graph_bytes == 0 || graph_bytes > static_cast<uint64_t>(INT64_MAX)) {
+             // v76：graph_bytes 允许为 0 —— 快照不再写 CAGRA 图字节，图由 buf_vecs_ 重建。
+             graph_bytes > static_cast<uint64_t>(INT64_MAX)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("[OBVSAG][cuVS] invalid snapshot header", K(ret), KP(key), K(dim32),
              K(expected_dim), K(n64));
