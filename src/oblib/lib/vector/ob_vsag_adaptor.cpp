@@ -20,6 +20,7 @@
 #include <map>
 #include <set>
 #include <mutex>
+#include <atomic>
 #include <vector>
 #include <memory>
 #include <limits>
@@ -89,6 +90,12 @@ struct ObCuvsEntry {
   bool vsag_ready_ = false;     // CPU fallback is built only when it is needed
 };
 static std::mutex g_ob_cuvs_mu;
+// v78：诊断打点。add_index 是逐行调进来的，25 万次调用的累计耗时从未被量过。
+// 只在 add 的入口/出口各取一次时间戳（ObTimeUtility::current_time 是微秒），
+// 两次取时间的开销对总时间可忽略。单位统一用 us。
+static std::atomic<int64_t> g_ob_cuvs_add_us{0};
+static std::atomic<int64_t> g_ob_cuvs_add_calls{0};
+static std::atomic<int64_t> g_ob_cuvs_add_rows{0};
 static std::map<void *, ObCuvsEntry *> g_ob_cuvs_reg;
 static std::mutex g_ob_cuvs_marked_mu;
 static std::set<void *> g_ob_cuvs_marked;  // handles of lib=cuvs indexes (marked by the plugin)
@@ -171,25 +178,33 @@ static void ob_cuvs_register(void *key, const float *vectors, const int64_t *ids
 static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
                         int dim, int size) {
   if (vectors == nullptr || ids == nullptr || dim <= 0 || size <= 0) { return; }
-  std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
-  ObCuvsEntry *&slot = g_ob_cuvs_reg[key];
-  if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
-  if (slot->dim_ == 0) { slot->dim_ = dim; }
-  if (slot->dim_ != dim) { return; }
-  // v77：预分配。add_index 是**逐行**调进来的（见本函数上方注释），25 万行会把
-  // buf_vecs_ 从 0 一路 2x 增长到 25 万条 —— 期间累计 memcpy ≈ 2 倍最终大小
-  // （128d 244MB / 256d 488MB）外加约 18 次 128~256MB 级的 realloc。
-  // 这些全在 DDL 建图计时窗口里。一次性 reserve 掉以后只剩每行 1KB 的拷贝。
-  // 只在第一次（空表）时 reserve，避免反复扩容。
-  static const size_t kObCuvsReserveRows = 262144UL;
-  if (slot->buf_vecs_.empty() &&
-      slot->buf_vecs_.capacity() < kObCuvsReserveRows * static_cast<size_t>(dim)) {
-    slot->buf_vecs_.reserve(kObCuvsReserveRows * static_cast<size_t>(dim));
-    slot->buf_ids_.reserve(kObCuvsReserveRows);
+  // v78 打点：t0 取在加锁之前，这样计进去的时间包含"等锁"，也就是把锁竞争算在内。
+  const int64_t add_t0_us = ObTimeUtility::current_time();
+  {
+    std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
+    ObCuvsEntry *&slot = g_ob_cuvs_reg[key];
+    if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
+    if (slot->dim_ == 0) { slot->dim_ = dim; }
+    if (slot->dim_ == dim) {
+      // v77：预分配。add_index 是**逐行**调进来的（见本函数上方注释），25 万行会把
+      // buf_vecs_ 从 0 一路 2x 增长到 25 万条 —— 期间累计 memcpy ≈ 2 倍最终大小
+      // （128d 244MB / 256d 488MB）外加约 18 次 128~256MB 级的 realloc。
+      // 这些全在 DDL 建图计时窗口里。一次性 reserve 掉以后只剩每行 1KB 的拷贝。
+      // 只在第一次（空表）时 reserve，避免反复扩容。
+      static const size_t kObCuvsReserveRows = 262144UL;
+      if (slot->buf_vecs_.empty() &&
+          slot->buf_vecs_.capacity() < kObCuvsReserveRows * static_cast<size_t>(dim)) {
+        slot->buf_vecs_.reserve(kObCuvsReserveRows * static_cast<size_t>(dim));
+        slot->buf_ids_.reserve(kObCuvsReserveRows);
+      }
+      slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
+                             vectors + static_cast<size_t>(dim) * size);
+      slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+    }
   }
-  slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
-                         vectors + static_cast<size_t>(dim) * size);
-  slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
+  g_ob_cuvs_add_us.fetch_add(ObTimeUtility::current_time() - add_t0_us, std::memory_order_relaxed);
+  g_ob_cuvs_add_calls.fetch_add(1, std::memory_order_relaxed);
+  g_ob_cuvs_add_rows.fetch_add(size, std::memory_order_relaxed);
 }
 static bool ob_cuvs_vsag_ready(void *key) {
   std::lock_guard<std::mutex> guard(g_ob_cuvs_mu);
@@ -465,6 +480,16 @@ static bool ob_cuvs_serialize(void *key, std::ostream &out, int &ret) {
   }
   LOG_INFO("[OBVSAG][cuVS] serialized GPU CAGRA snapshot", KP(key), K(n), K(dim32),
            K(built), K(build_us), K(graph_bytes));
+  // v78 打点：把 DDL 窗口切成「GPU 建图」与「逐行喂数据」两段。
+  // add_us 已包含等锁时间；calls 应当等于行数（逐行），若明显小于 rows 说明有批量调用。
+  LOG_INFO("[PROBE] obvsag_window_breakdown", KP(key), K(n), K(dim32),
+           "add_us", g_ob_cuvs_add_us.load(std::memory_order_relaxed),
+           "calls", g_ob_cuvs_add_calls.load(std::memory_order_relaxed),
+           "rows", g_ob_cuvs_add_rows.load(std::memory_order_relaxed),
+           "build_us", build_us);
+  g_ob_cuvs_add_us.store(0, std::memory_order_relaxed);
+  g_ob_cuvs_add_calls.store(0, std::memory_order_relaxed);
+  g_ob_cuvs_add_rows.store(0, std::memory_order_relaxed);
   return true;
 }
 
