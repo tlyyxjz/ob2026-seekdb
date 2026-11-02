@@ -176,6 +176,17 @@ static void ob_cuvs_add(void *key, const float *vectors, const int64_t *ids,
   if (slot == nullptr) { slot = new ObCuvsEntry(); slot->dim_ = dim; }
   if (slot->dim_ == 0) { slot->dim_ = dim; }
   if (slot->dim_ != dim) { return; }
+  // v77：预分配。add_index 是**逐行**调进来的（见本函数上方注释），25 万行会把
+  // buf_vecs_ 从 0 一路 2x 增长到 25 万条 —— 期间累计 memcpy ≈ 2 倍最终大小
+  // （128d 244MB / 256d 488MB）外加约 18 次 128~256MB 级的 realloc。
+  // 这些全在 DDL 建图计时窗口里。一次性 reserve 掉以后只剩每行 1KB 的拷贝。
+  // 只在第一次（空表）时 reserve，避免反复扩容。
+  static const size_t kObCuvsReserveRows = 262144UL;
+  if (slot->buf_vecs_.empty() &&
+      slot->buf_vecs_.capacity() < kObCuvsReserveRows * static_cast<size_t>(dim)) {
+    slot->buf_vecs_.reserve(kObCuvsReserveRows * static_cast<size_t>(dim));
+    slot->buf_ids_.reserve(kObCuvsReserveRows);
+  }
   slot->buf_vecs_.insert(slot->buf_vecs_.end(), vectors,
                          vectors + static_cast<size_t>(dim) * size);
   slot->buf_ids_.insert(slot->buf_ids_.end(), ids, ids + size);
